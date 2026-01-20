@@ -48,7 +48,7 @@ class DataLoaderLite:
         assert split in {'train', 'val'}
 
         # get the shard filenames
-        data_root = "D:/Documents/Code/nanogpt/edu_fineweb10B"
+        data_root = "/opt/train/data/nanogpt/edu_fineweb10B"
         shards = os.listdir(data_root)
         shards = [s for s in shards if split in s]
         shards = sorted(shards)

@@ -46,6 +46,6 @@ TRAINING_CONFIG = {
     "total_batch_size": 524288,  # 2**19, ~0.5M, in number of tokens
     "micro_batch_size": 1,
     "sequence_length": 1024,
-    "log_dir": "D:/Documents/Code/nanogpt/edu_fineweb10B",
+    "log_dir": "/opt/train/data/LLM_Training/GPT2/log_train/baseline/log",
 }
 

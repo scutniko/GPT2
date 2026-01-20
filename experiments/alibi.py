@@ -46,6 +46,6 @@ TRAINING_CONFIG = {
     "total_batch_size": 524288,
     "micro_batch_size": 8,
     "sequence_length": 1024,
-    "log_dir": "/opt/train/data/nanogpt/alibi/log",
+    "log_dir": "/opt/train/data/LLM_Training/GPT2/log_train/alibi/log",
 }
 
