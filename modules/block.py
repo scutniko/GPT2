@@ -4,6 +4,9 @@ Transformer Block模块
 
 import torch.nn as nn
 
+from GPT2.modules.attentions import BaseAttention
+from GPT2.modules.mlp import MLP
+
 
 class Block(nn.Module):
     """
@@ -26,8 +29,6 @@ class Block(nn.Module):
         # CausalSelfAttention，将[B, T, C] -> [B, T, C]，不改变shape
         # 如果传入了attention_class，使用传入的；否则从config获取
         if attention_class is None:
-            # 默认导入BaseAttention
-            from GPT2.modules.attentions import BaseAttention
             attention_class = BaseAttention
         self.attn = attention_class(config, rope=rope, alibi=alibi)
         
@@ -35,7 +36,6 @@ class Block(nn.Module):
         self.ln_2 = nn.LayerNorm(config.n_embd)
         
         # MLP，将[B, T, C] -> [B, T, C]，不改变shape
-        from GPT2.modules.mlp import MLP
         self.mlp = MLP(config)
     
     def forward(self, x):
