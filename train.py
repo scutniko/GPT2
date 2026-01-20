@@ -45,7 +45,11 @@ def main():
         exp_module = importlib.import_module(f'GPT2.experiments.{args.experiment}')
     except ImportError:
         print(f"错误: 找不到实验配置 '{args.experiment}'")
-        print(f"可用的实验: baseline, alibi, rope, sine, mqa, gqa, mla")
+        print(f"可用的实验:")
+        print(f"  位置编码: baseline, alibi, rope, sine")
+        print(f"  注意力机制: mqa, gqa, mla")
+        print(f"  激活函数: relu, silu, swiglu, geglu")
+        print(f"  归一化层: rmsnorm")
         sys.exit(1)
     
     # 获取配置
@@ -55,10 +59,18 @@ def main():
     position_encoding_class = exp_module.POSITION_ENCODING_CLASS
     train_config = exp_module.TRAINING_CONFIG
     
+    # 获取可选的MLP和归一化层配置（如果实验配置中没有定义，则为None）
+    mlp_class = getattr(exp_module, 'MLP_CLASS', None)
+    norm_class = getattr(exp_module, 'NORM_CLASS', None)
+    
     print(f"=" * 60)
     print(f"实验: {experiment_name}")
     print(f"注意力机制: {attention_class.__name__}")
     print(f"位置编码: {position_encoding_class.__name__}")
+    if mlp_class is not None:
+        print(f"MLP类型: {mlp_class.__name__}")
+    if norm_class is not None:
+        print(f"归一化层: {norm_class.__name__}")
     print(f"=" * 60)
     
     # 设置DDP (分布式数据并行)
@@ -128,7 +140,8 @@ def main():
     torch.set_float32_matmul_precision('high')
 
     # 创建模型
-    model = GPT(model_config, attention_class, position_encoding_class)
+    model = GPT(model_config, attention_class, position_encoding_class,
+                mlp_class=mlp_class, norm_class=norm_class)
     
     # 检查点恢复（在DDP包装之前）
     start_step = 0

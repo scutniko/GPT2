@@ -25,12 +25,15 @@ class GPT(nn.Module):
     支持多种注意力机制和位置编码的组合
     """
     
-    def __init__(self, config, attention_class=None, position_encoding_class=None):
+    def __init__(self, config, attention_class=None, position_encoding_class=None,
+                 mlp_class=None, norm_class=None):
         """
         Args:
             config: GPTConfig 配置对象
             attention_class: 注意力机制类（如BaseAttention, MQAAttention等）
             position_encoding_class: 位置编码类（如LearnedPositionEncoding, RoPE等）
+            mlp_class: MLP类（如MLP, ReLUMLP, SwiGLUMLP等）
+            norm_class: 归一化层类（如LayerNorm, RMSNorm等）
         """
         super().__init__()
         self.config = config
@@ -44,6 +47,17 @@ class GPT(nn.Module):
         if position_encoding_class is None:
             position_encoding_class = LearnedPositionEncoding
         self.position_encoding_class = position_encoding_class
+        
+        # 如果没有指定mlp_class，使用默认的MLP
+        if mlp_class is None:
+            from GPT2.modules.mlp import MLP as DefaultMLP
+            mlp_class = DefaultMLP
+        self.mlp_class = mlp_class
+        
+        # 如果没有指定norm_class，使用默认的LayerNorm
+        if norm_class is None:
+            norm_class = nn.LayerNorm
+        self.norm_class = norm_class
         
         # 判断位置编码类型
         self.use_alibi = position_encoding_class == ALiBi
@@ -74,16 +88,17 @@ class GPT(nn.Module):
             self.rope = RoPE(head_dim, config.block_size)
         
         # Transformer blocks
-        # 传递位置编码对象给每个 Block
+        # 传递位置编码对象、MLP类和归一化层类给每个 Block
         rope_to_pass = self.rope if self.use_rope else None
         alibi_to_pass = self.alibi if self.use_alibi else None
         self.transformer['h'] = nn.ModuleList([
-            Block(config, attention_class, rope=rope_to_pass, alibi=alibi_to_pass) 
+            Block(config, attention_class, mlp_class=self.mlp_class, 
+                  norm_class=self.norm_class, rope=rope_to_pass, alibi=alibi_to_pass) 
             for _ in range(config.n_layer)
         ])
         
         # Final layer norm
-        self.transformer['ln_f'] = nn.LayerNorm(config.n_embd)
+        self.transformer['ln_f'] = self.norm_class(config.n_embd)
         
         # 最后将Transformer的输出映射到词表空间，将[B, T, C] -> [B, T, vocab_size]
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -167,7 +182,8 @@ class GPT(nn.Module):
         return logits, loss
     
     @classmethod
-    def from_pretrained(cls, model_type, attention_class=None, position_encoding_class=None):
+    def from_pretrained(cls, model_type, attention_class=None, position_encoding_class=None,
+                        mlp_class=None, norm_class=None):
         """
         从HuggingFace加载预训练的GPT-2模型权重
         
@@ -175,6 +191,8 @@ class GPT(nn.Module):
             model_type: 模型类型 ('gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl')
             attention_class: 注意力机制类（可选）
             position_encoding_class: 位置编码类（可选）
+            mlp_class: MLP类（可选）
+            norm_class: 归一化层类（可选）
         """
         assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
         from transformers import GPT2LMHeadModel
@@ -191,7 +209,8 @@ class GPT(nn.Module):
         config_args['block_size'] = 1024  # always 1024 for GPT model checkpoints
         # create a from-scratch initialized minGPT model
         config = GPTConfig(**config_args)
-        model = GPT(config, attention_class, position_encoding_class)
+        model = GPT(config, attention_class, position_encoding_class,
+                    mlp_class=mlp_class, norm_class=norm_class)
         sd = model.state_dict()
         sd_keys = sd.keys()
         sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')]  # discard this mask / buffer, not a param
