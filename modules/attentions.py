@@ -13,7 +13,7 @@ class BaseAttention(nn.Module):
     标准的多头自注意力机制（GPT-2 baseline）
     """
     
-    def __init__(self, config):
+    def __init__(self, config, rope=None, alibi=None):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # 在一个batch中，对全部的head进行query, key, value投影
@@ -31,6 +31,10 @@ class BaseAttention(nn.Module):
         # n_embd: embedding dimension
         self.n_head = config.n_head
         self.n_embd = config.n_embd
+        
+        # 位置编码
+        self.rope = rope
+        self.alibi = alibi
 
     def forward(self, x):
         # 输入x的shape是[B, T, C]，最终输出y的shape是[B, T, C]
@@ -52,10 +56,19 @@ class BaseAttention(nn.Module):
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
 
+        # 应用 RoPE（如果有）
+        if self.rope is not None:
+            q, k = self.rope(q, k)
+        
+        # 应用 ALiBi（如果有）
+        attn_bias = None
+        if self.alibi is not None:
+            attn_bias = self.alibi(T)  # [1, n_head, T, T]
+        
         # 使用flash attention计算注意力，得到[B, n_head, T, head_size]
         # is_causal=True表示是因果注意力，即只能看到前面的token，不能看到后面的token。
         # 返回的y的shape是[B, n_head, T, head_size]
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
+        y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias, is_causal=True) # flash attention
 
         # 将[B, n_head, T, head_size]转置回[B, T, C]，再拼接起来
         # 其中contiguous()是为了确保tensor在内存中是连续的，因为transpose会破坏连续性，所以需要重新排列内存，方便后续的计算。
@@ -72,7 +85,7 @@ class MQAAttention(nn.Module):
     Query有多个头，Key和Value只有一个头（所有query头共享）
     """
     
-    def __init__(self, config):
+    def __init__(self, config, rope=None, alibi=None):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # MQA (Multi-Query Attention): Query有多个头，Key和Value只有一个头
@@ -98,6 +111,10 @@ class MQAAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.head_dim = head_dim
+        
+        # 位置编码
+        self.rope = rope
+        self.alibi = alibi
 
     def forward(self, x):
         # 输入x的shape是[B, T, C]，最终输出y的shape是[B, T, C]
@@ -119,12 +136,24 @@ class MQAAttention(nn.Module):
         k = k.unsqueeze(1)  # [B, 1, T, head_dim]
         v = v.unsqueeze(1)  # [B, 1, T, head_dim]
         
+        # 应用 RoPE（如果有）
+        if self.rope is not None:
+            # RoPE 需要所有头的 k，所以先 broadcast
+            k_expanded = k.expand(B, self.n_head, T, self.head_dim)
+            q, k_expanded = self.rope(q, k_expanded)
+            k = k_expanded[:, :1, :, :]  # 取回第一个头（所有头相同）
+        
+        # 应用 ALiBi（如果有）
+        attn_bias = None
+        if self.alibi is not None:
+            attn_bias = self.alibi(T)  # [1, n_head, T, T]
+        
         # 使用flash attention计算注意力
         # q: [B, n_head, T, head_dim]
         # k: [B, 1, T, head_dim] -> 自动broadcast到 [B, n_head, T, head_dim]
         # v: [B, 1, T, head_dim] -> 自动broadcast到 [B, n_head, T, head_dim]
         # 返回的y的shape是[B, n_head, T, head_dim]
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
+        y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias, is_causal=True) # flash attention
 
         # 将[B, n_head, T, head_dim]转置回[B, T, C]，再拼接起来
         y = y.transpose(1, 2).contiguous().view(B, T, C)
@@ -141,7 +170,7 @@ class GQAAttention(nn.Module):
     多个 Q 头共享一个 KV 头，减少 KV cache 大小
     """
     
-    def __init__(self, config):
+    def __init__(self, config, rope=None, alibi=None):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # GQA: Grouped Query Attention
@@ -169,6 +198,10 @@ class GQAAttention(nn.Module):
         # 输出投影: [B, T, C] -> [B, T, C]
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
         self.c_proj.NANOGPT_SCALE_INIT = 1
+        
+        # 位置编码
+        self.rope = rope
+        self.alibi = alibi
 
     def forward(self, x):
         # 输入x的shape是[B, T, C]，最终输出y的shape是[B, T, C]
@@ -185,16 +218,32 @@ class GQAAttention(nn.Module):
         v = self.v_proj(x)
         v = v.view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)
         
+        # 应用 RoPE（如果有）- 在重复之前应用
+        if self.rope is not None:
+            # 对于 GQA，先对原始的 q 和 k 应用 RoPE
+            # q: [B, n_head, T, head_dim]
+            # k: [B, n_kv_head, T, head_dim]
+            # 需要将 k 扩展到 n_head 来应用 RoPE，然后再压缩回 n_kv_head
+            k_expanded = k.repeat_interleave(self.n_rep, dim=1)
+            q, k_expanded = self.rope(q, k_expanded)
+            # 将 k 压缩回 n_kv_head（取每组的第一个）
+            k = k_expanded[:, ::self.n_rep, :, :]
+        
         # 重复 K 和 V 来匹配 Q 的头数
         # [B, n_kv_head, T, head_dim] -> [B, n_head, T, head_dim]
         if self.n_rep > 1:
             # 每个 KV 头重复 n_rep 次
             k = k.repeat_interleave(self.n_rep, dim=1)
             v = v.repeat_interleave(self.n_rep, dim=1)
+        
+        # 应用 ALiBi（如果有）
+        attn_bias = None
+        if self.alibi is not None:
+            attn_bias = self.alibi(T)  # [1, n_head, T, T]
 
         # 使用 flash attention 计算注意力
         # [B, n_head, T, head_dim] -> [B, n_head, T, head_dim]
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias, is_causal=True)
 
         # 将多头输出拼接回原始维度
         # [B, n_head, T, head_dim] -> [B, T, n_head, head_dim] -> [B, T, C]
@@ -212,7 +261,7 @@ class MLAAttention(nn.Module):
     核心思想：将 KV 投影到低维潜在空间，减少存储和计算开销
     """
     
-    def __init__(self, config):
+    def __init__(self, config, rope=None, alibi=None):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # MLA: Multi-head Latent Attention (DeepSeek-V2)
@@ -245,6 +294,10 @@ class MLAAttention(nn.Module):
         # 输出投影
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
         self.c_proj.NANOGPT_SCALE_INIT = 1
+        
+        # 位置编码
+        self.rope = rope
+        self.alibi = alibi
 
     def forward(self, x):
         # 输入x的shape是[B, T, C]，最终输出y的shape是[B, T, C]
@@ -275,9 +328,18 @@ class MLAAttention(nn.Module):
         k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         
+        # 应用 RoPE（如果有）
+        if self.rope is not None:
+            q, k = self.rope(q, k)
+        
+        # 应用 ALiBi（如果有）
+        attn_bias = None
+        if self.alibi is not None:
+            attn_bias = self.alibi(T)  # [1, n_head, T, T]
+        
         # 步骤5: 标准的多头注意力计算
         # [B, n_head, T, head_dim] -> [B, n_head, T, head_dim]
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias, is_causal=True)
         
         # 步骤6: 合并多头输出
         # [B, n_head, T, head_dim] -> [B, T, C]

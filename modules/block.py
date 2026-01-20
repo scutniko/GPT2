@@ -11,11 +11,13 @@ class Block(nn.Module):
     包含LayerNorm、Attention、MLP等组件
     """
     
-    def __init__(self, config, attention_class=None):
+    def __init__(self, config, attention_class=None, rope=None, alibi=None):
         """
         Args:
             config: 模型配置
             attention_class: 注意力机制类（如果为None，则从config.attention_class获取）
+            rope: RoPE位置编码对象（可选）
+            alibi: ALiBi位置编码对象（可选）
         """
         super().__init__()
         # LayerNorm, 将[B, T, C] -> [B, T, C]，不改变shape
@@ -27,7 +29,7 @@ class Block(nn.Module):
             # 默认导入BaseAttention
             from GPT2.modules.attentions import BaseAttention
             attention_class = BaseAttention
-        self.attn = attention_class(config)
+        self.attn = attention_class(config, rope=rope, alibi=alibi)
         
         # LayerNorm, 将[B, T, C] -> [B, T, C]，不改变shape
         self.ln_2 = nn.LayerNorm(config.n_embd)

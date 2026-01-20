@@ -8,6 +8,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from GPT2.core.config import GPTConfig
+from GPT2.modules.attentions import BaseAttention
+from GPT2.modules.position_encodings import (
+    LearnedPositionEncoding,
+    ALiBi,
+    RoPE,
+    SinusoidalPositionalEncoding,
+)
+from GPT2.modules.block import Block
+
 
 class GPT(nn.Module):
     """
@@ -27,18 +37,15 @@ class GPT(nn.Module):
         
         # 如果没有指定attention_class，使用默认的BaseAttention
         if attention_class is None:
-            from GPT2.modules.attentions import BaseAttention
             attention_class = BaseAttention
         self.attention_class = attention_class
         
         # 如果没有指定position_encoding_class，使用默认的LearnedPositionEncoding
         if position_encoding_class is None:
-            from GPT2.modules.position_encodings import LearnedPositionEncoding
             position_encoding_class = LearnedPositionEncoding
         self.position_encoding_class = position_encoding_class
         
         # 判断位置编码类型
-        from GPT2.modules.position_encodings import ALiBi, RoPE, LearnedPositionEncoding, SinusoidalPositionalEncoding
         self.use_alibi = position_encoding_class == ALiBi
         self.use_rope = position_encoding_class == RoPE
         self.use_learned_pe = position_encoding_class == LearnedPositionEncoding
@@ -67,9 +74,12 @@ class GPT(nn.Module):
             self.rope = RoPE(head_dim, config.block_size)
         
         # Transformer blocks
-        from GPT2.modules.block import Block
+        # 传递位置编码对象给每个 Block
+        rope_to_pass = self.rope if self.use_rope else None
+        alibi_to_pass = self.alibi if self.use_alibi else None
         self.transformer['h'] = nn.ModuleList([
-            Block(config, attention_class) for _ in range(config.n_layer)
+            Block(config, attention_class, rope=rope_to_pass, alibi=alibi_to_pass) 
+            for _ in range(config.n_layer)
         ])
         
         # Final layer norm
@@ -171,7 +181,6 @@ class GPT(nn.Module):
         print("loading weights from pretrained gpt: %s" % model_type)
 
         # n_layer, n_head and n_embd are determined from model_type
-        from GPT2.core.config import GPTConfig
         config_args = {
             'gpt2':         dict(n_layer=12, n_head=12, n_embd=768),  # 124M params
             'gpt2-medium':  dict(n_layer=24, n_head=16, n_embd=1024), # 350M params
