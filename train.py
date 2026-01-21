@@ -24,6 +24,7 @@ from core.data_loader import DataLoaderLite, load_tokens
 from core.training_utils import get_lr, get_most_likely_row
 from models.gpt import GPT
 
+from core.config import GPTConfig
 
 def main():
     """主训练函数"""
@@ -40,7 +41,7 @@ def main():
 
     # 动态加载实验配置
     try:
-        exp_module = importlib.import_module(f'GPT2.experiments.{args.experiment}')
+        exp_module = importlib.import_module(f'experiments.{args.experiment}')
     except ImportError:
         print(f"错误: 找不到实验配置 '{args.experiment}'")
         print(f"可用的实验:")
