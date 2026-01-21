@@ -10,19 +10,23 @@ set -euo pipefail
 # 配置区域 - 修改这里来切换实验
 # ------------------------------------------------
 EXPERIMENT="${EXPERIMENT:-mla}"  # 可通过环境变量覆盖，默认mla
-BASE_DIR="/opt/train/data/nanogpt"
-TRAIN_DIR="${BASE_DIR}/${EXPERIMENT}"
-LOG_DIR="${TRAIN_DIR}/log"
-TRAIN_FILE="${BASE_DIR}/GPT2/train.py"  # 统一训练入口
+
+# 动态获取脚本所在目录（项目根目录）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="${SCRIPT_DIR}"
+
+# 基于项目根目录构建路径
+TRAIN_FILE="${PROJECT_ROOT}/train.py"
+LOG_DIR="${PROJECT_ROOT}/log_train/${EXPERIMENT}/log"
 
 echo "=============================================="
 echo "[nightly] Modular Training Framework"
 echo "[nightly] $(date)"
 echo "=============================================="
+echo "[nightly] PROJECT_ROOT=${PROJECT_ROOT}"
 echo "[nightly] EXPERIMENT=${EXPERIMENT}"
-echo "[nightly] BASE_DIR=${BASE_DIR}"
-echo "[nightly] LOG_DIR=${LOG_DIR}"
 echo "[nightly] TRAIN_FILE=${TRAIN_FILE}"
+echo "[nightly] LOG_DIR=${LOG_DIR}"
 
 # ------------------------------------------------
 # 1. 检查训练脚本是否存在
