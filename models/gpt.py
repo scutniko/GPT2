@@ -8,15 +8,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from GPT2.core.config import GPTConfig
-from GPT2.modules.attentions import BaseAttention
-from GPT2.modules.position_encodings import (
+from core.config import GPTConfig
+from modules.attentions import BaseAttention
+from modules.position_encodings import (
     LearnedPositionEncoding,
     ALiBi,
     RoPE,
     SinusoidalPositionalEncoding,
 )
-from GPT2.modules.block import Block
+from modules.block import Block
 
 
 class GPT(nn.Module):
@@ -50,7 +50,7 @@ class GPT(nn.Module):
         
         # 如果没有指定mlp_class，使用默认的MLP
         if mlp_class is None:
-            from GPT2.modules.mlp import MLP as DefaultMLP
+            from modules.mlp import MLP as DefaultMLP
             mlp_class = DefaultMLP
         self.mlp_class = mlp_class
         

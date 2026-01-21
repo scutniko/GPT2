@@ -14,17 +14,15 @@ from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 
-# 添加父目录到路径，使GPT2包可以被导入
 current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
 
 import tiktoken
-from GPT2.hellaswag import render_example, iterate_examples
-from GPT2.core.data_loader import DataLoaderLite, load_tokens
-from GPT2.core.training_utils import get_lr, get_most_likely_row
-from GPT2.models.gpt import GPT
+from hellaswag import render_example, iterate_examples
+from core.data_loader import DataLoaderLite, load_tokens
+from core.training_utils import get_lr, get_most_likely_row
+from models.gpt import GPT
 
 
 def main():

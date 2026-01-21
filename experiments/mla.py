@@ -7,16 +7,15 @@ import sys
 import os
 from dataclasses import dataclass
 
-# 添加GPT2父目录到路径
+# 添加项目根目录到路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
-gpt2_dir = os.path.dirname(current_dir)
-parent_dir = os.path.dirname(gpt2_dir)
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
+project_root = os.path.dirname(current_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
-from GPT2.core.config import GPTConfig
-from GPT2.modules.attentions import MLAAttention
-from GPT2.modules.position_encodings import LearnedPositionEncoding
+from core.config import GPTConfig
+from modules.attentions import MLAAttention
+from modules.position_encodings import LearnedPositionEncoding
 
 
 # 实验名称
@@ -55,6 +54,6 @@ TRAINING_CONFIG = {
     "total_batch_size": 524288,
     "micro_batch_size": 8,
     "sequence_length": 1024,
-    "log_dir": "/opt/train/data/LLM_Training/GPT2/log_train/mla/log",
+    "log_dir": os.path.join(project_root, "log_train", EXPERIMENT_NAME, "log"),
 }
 

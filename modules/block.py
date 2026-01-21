@@ -5,8 +5,8 @@ Transformer Block模块
 
 import torch.nn as nn
 
-from GPT2.modules.attentions import BaseAttention
-from GPT2.modules.mlp import MLP
+from modules.attentions import BaseAttention
+from modules.mlp import MLP
 
 
 class Block(nn.Module):
