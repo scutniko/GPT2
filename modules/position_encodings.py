@@ -78,8 +78,9 @@ class ALiBi(nn.Module):
         """
         # 创建位置矩阵 [seq_len, seq_len]
         # 其中 relative_position[i, j] = i - j
-        context_position = torch.arange(seq_len)[:, None]
-        memory_position = torch.arange(seq_len)[None, :]
+        device = self.slopes.device
+        context_position = torch.arange(seq_len, device=device)[:, None]
+        memory_position = torch.arange(seq_len, device=device)[None, :]
         relative_position = memory_position - context_position  # [seq_len, seq_len]
         
         # 对于因果注意力，只关注过去的位置（j <= i）
