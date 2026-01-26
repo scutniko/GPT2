@@ -93,22 +93,26 @@ class ALiBi(nn.Module):
         # 添加batch维度: [1, n_head, seq_len, seq_len]
         self.register_buffer("alibi_bias", alibi_bias[None, :, :, :], persistent=False)
     
-    def forward(self, seq_len):
+    def forward(self, query_len, key_len=None):
         """
         返回ALiBi偏置矩阵
         
         Args:
-            seq_len: 当前序列长度
+            query_len: 查询长度
+            key_len: 键值长度（可选，默认与query_len相同）
             
         Returns:
-            bias: [1, n_head, seq_len, seq_len]
+            bias: [1, n_head, query_len, key_len]
         """
-        # 如果序列长度超过缓存，重新计算
-        if seq_len > self.alibi_bias.shape[2]:
-            self._init_cache(seq_len)
+        if key_len is None:
+            key_len = query_len
         
-        # 返回对应长度的偏置
-        return self.alibi_bias[:, :, :seq_len, :seq_len]
+        # 如果序列长度超过缓存，重新计算
+        if key_len > self.alibi_bias.shape[2]:
+            self._init_cache(key_len)
+        
+        # 返回对应长度的偏置（取最后query_len行）
+        return self.alibi_bias[:, :, key_len - query_len:key_len, :key_len]
 
 
 class RoPE(nn.Module):
@@ -138,25 +142,27 @@ class RoPE(nn.Module):
         self.register_buffer("cos_cached", emb.cos()[None, None, :, :], persistent=False)
         self.register_buffer("sin_cached", emb.sin()[None, None, :, :], persistent=False)
     
-    def forward(self, q, k):
+    def forward(self, q, k, start_pos=0):
         """
         对query和key应用旋转位置编码
         
         Args:
             q, k: [B, n_head, T, head_dim]
+            start_pos: 起始位置偏移（用于KV cache）
             
         Returns:
             q_rot, k_rot: 应用RoPE后的q和k
         """
         seq_len = q.shape[2]
+        end_pos = start_pos + seq_len
         
         # 如果序列长度超过缓存，重新计算
-        if seq_len > self.cos_cached.shape[2]:
-            self._init_cache(seq_len)
+        if end_pos > self.cos_cached.shape[2]:
+            self._init_cache(end_pos)
         
         # 获取对应长度的cos和sin
-        cos = self.cos_cached[:, :, :seq_len, :]
-        sin = self.sin_cached[:, :, :seq_len, :]
+        cos = self.cos_cached[:, :, start_pos:end_pos, :]
+        sin = self.sin_cached[:, :, start_pos:end_pos, :]
         
         # 应用旋转
         q_rot = self.apply_rotary_emb(q, cos, sin)
@@ -216,14 +222,16 @@ class SinusoidalPositionalEncoding(nn.Module):
         # shape: [1, max_seq_len, d_model]
         self.register_buffer('pe', pe.unsqueeze(0))
     
-    def forward(self, x):
+    def forward(self, x, start_pos=0):
         """
         Args:
             x: [B, T, d_model]
+            start_pos: 起始位置偏移（用于KV cache）
             
         Returns:
             pe: [B, T, d_model] 位置编码
         """
         # 返回对应序列长度的位置编码
-        return self.pe[:, :x.size(1), :]
+        end_pos = start_pos + x.size(1)
+        return self.pe[:, start_pos:end_pos, :]
 

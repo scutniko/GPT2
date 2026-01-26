@@ -52,19 +52,27 @@ class Block(nn.Module):
         # MLP，将[B, T, C] -> [B, T, C]，不改变shape
         self.mlp = mlp_class(config)
     
-    def forward(self, x):
+    def forward(self, x, past_kv=None, use_cache=False):
         """
         前向传播
         
         Args:
             x: [B, T, C]
+            past_kv: 可选的KV cache
+            use_cache: 是否返回当前KV cache
             
         Returns:
             x: [B, T, C]
         """
         # 将x与self.attn(self.ln_1(x))相加，得到[B, T, C]
-        x = x + self.attn(self.ln_1(x))
+        if use_cache:
+            attn_out, present_kv = self.attn(self.ln_1(x), past_kv=past_kv, use_cache=True)
+            x = x + attn_out
+        else:
+            x = x + self.attn(self.ln_1(x))
         # 将x与self.mlp(self.ln_2(x))相加，得到[B, T, C]
         x = x + self.mlp(self.ln_2(x))
+        if use_cache:
+            return x, present_kv
         return x
 

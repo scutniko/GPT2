@@ -127,13 +127,15 @@ class GPT(nn.Module):
             # 初始化embedding的权重，使得输出方差与输入方差一致
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, past_kv=None, use_cache=False):
         """
         前向传播
         
         Args:
             idx: token indices [B, T]
             targets: target token indices [B, T] (可选，用于计算loss)
+            past_kv: 可选的KV cache列表（每层一个）
+            use_cache: 是否返回当前KV cache
             
         Returns:
             logits: [B, T, vocab_size]
@@ -141,6 +143,9 @@ class GPT(nn.Module):
         """
         # 输入idx的shape是[B, T]，其中B是batch size，T是序列长度
         B, T = idx.size()
+        past_len = 0
+        if past_kv is not None and len(past_kv) > 0 and past_kv[0] is not None:
+            past_len = past_kv[0][0].size(2)
         # 确保序列长度不超过最大序列长度
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
         
@@ -150,12 +155,12 @@ class GPT(nn.Module):
         # Position encoding
         if self.use_learned_pe:
             # 可学习的位置编码
-            pos = torch.arange(0, T, dtype=torch.long, device=idx.device)  # shape (T)
+            pos = torch.arange(past_len, past_len + T, dtype=torch.long, device=idx.device)  # shape (T)
             pos_emb = self.transformer.wpe(pos)  # shape (T, n_embd)
             x = tok_emb + pos_emb
         elif self.use_sine_pe:
             # 正弦位置编码
-            pos_emb = self.pos_encoder(tok_emb)  # shape (B, T, n_embd)
+            pos_emb = self.pos_encoder(tok_emb, start_pos=past_len)  # shape (B, T, n_embd)
             x = tok_emb + pos_emb
         elif self.use_alibi or self.use_rope:
             # ALiBi和RoPE不需要在这里添加位置编码，在attention中处理
@@ -165,8 +170,16 @@ class GPT(nn.Module):
             x = tok_emb
         
         # 前向传播Transformer的每个block，得到[B, T, n_embd]
-        for block in self.transformer.h:
-            x = block(x)
+        presents = [] if use_cache else None
+        if use_cache:
+            if past_kv is None:
+                past_kv = [None] * len(self.transformer.h)
+            for layer_idx, block in enumerate(self.transformer.h):
+                x, present_kv = block(x, past_kv=past_kv[layer_idx], use_cache=True)
+                presents.append(present_kv)
+        else:
+            for block in self.transformer.h:
+                x = block(x)
         
         # 最后将Transformer的输出进行LayerNorm，得到[B, T, n_embd]
         x = self.transformer.ln_f(x)
@@ -179,6 +192,8 @@ class GPT(nn.Module):
         if targets is not None:
             # 这里用的是原始logits，而不是softmax结果，因为F.cross_entropy会自动内部计算softmax，所以不需要再手动计算。
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        if use_cache:
+            return logits, loss, presents
         return logits, loss
     
     @classmethod
