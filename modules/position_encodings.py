@@ -208,10 +208,14 @@ class SinusoidalPositionalEncoding(nn.Module):
     
     def __init__(self, d_model, max_seq_len=2048):
         super().__init__()
+        self.d_model = d_model
+        self._init_cache(max_seq_len)
+
+    def _init_cache(self, max_seq_len):
         # 创建位置编码矩阵 [max_seq_len, d_model]
-        pe = torch.zeros(max_seq_len, d_model)
+        pe = torch.zeros(max_seq_len, self.d_model)
         position = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        div_term = torch.exp(torch.arange(0, self.d_model, 2).float() * (-math.log(10000.0) / self.d_model))
         
         # PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
         pe[:, 0::2] = torch.sin(position * div_term)
@@ -220,7 +224,17 @@ class SinusoidalPositionalEncoding(nn.Module):
         
         # 注册为buffer，不参与梯度更新
         # shape: [1, max_seq_len, d_model]
-        self.register_buffer('pe', pe.unsqueeze(0))
+        self.register_buffer('pe', pe.unsqueeze(0), persistent=False)
+    
+    def ensure_cache(self, max_seq_len, device=None, dtype=None):
+        """
+        预先扩展位置编码缓存，避免逐步扩展带来的开销
+        """
+        if max_seq_len <= self.pe.size(1):
+            return
+        self._init_cache(max_seq_len)
+        if device is not None or dtype is not None:
+            self.pe = self.pe.to(device=device, dtype=dtype)
     
     def forward(self, x, start_pos=0):
         """
@@ -233,5 +247,8 @@ class SinusoidalPositionalEncoding(nn.Module):
         """
         # 返回对应序列长度的位置编码
         end_pos = start_pos + x.size(1)
+        if end_pos > self.pe.size(1):
+            self._init_cache(end_pos)
+            self.pe = self.pe.to(x.device, dtype=x.dtype)
         return self.pe[:, start_pos:end_pos, :]
 
