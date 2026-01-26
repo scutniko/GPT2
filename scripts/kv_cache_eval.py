@@ -25,6 +25,26 @@ from models.gpt import GPT
 from modules.position_encodings import LearnedPositionEncoding, SinusoidalPositionalEncoding, RoPE, ALiBi
 from core.config import GPTConfig
 
+def _ensure_checkpoint_module_alias():
+    # Old checkpoints may reference the project root as "GPT2.*"
+    if "GPT2" in sys.modules:
+        return
+    pkg = types.ModuleType("GPT2")
+    sys.modules["GPT2"] = pkg
+    try:
+        sys.modules["GPT2.core"] = importlib.import_module("core")
+        sys.modules["GPT2.core.config"] = importlib.import_module("core.config")
+        sys.modules["GPT2.core.data_loader"] = importlib.import_module("core.data_loader")
+        sys.modules["GPT2.models"] = importlib.import_module("models")
+        sys.modules["GPT2.models.gpt"] = importlib.import_module("models.gpt")
+        sys.modules["GPT2.modules"] = importlib.import_module("modules")
+        sys.modules["GPT2.modules.position_encodings"] = importlib.import_module(
+            "modules.position_encodings"
+        )
+    except Exception:
+        # Best-effort alias; torch.load will raise if something is still missing.
+        pass
+
 def _sync_if_cuda(device):
     if str(device).startswith("cuda"):
         torch.cuda.synchronize()
@@ -47,7 +67,7 @@ def _find_latest_checkpoint(log_dir):
 
 
 @torch.no_grad()
-def generate_no_cache(model, input_ids, max_length, top_k, seed, device, use_autocast, block_size=None):
+def generate_no_cache(model, input_ids, max_length, top_k, temperature, seed, device, use_autocast, block_size=None):
     generator = torch.Generator(device=device)
     generator.manual_seed(seed)
     x = input_ids
@@ -64,6 +84,8 @@ def generate_no_cache(model, input_ids, max_length, top_k, seed, device, use_aut
         else:
             logits, _ = model(x_ctx)
         logits = logits[:, -1, :]
+        if temperature != 1.0:
+            logits = logits / temperature
         probs = F.softmax(logits, dim=-1)
         topk_probs, topk_indices = torch.topk(probs, top_k, dim=-1)
         ix = torch.multinomial(topk_probs, 1, generator=generator)
@@ -75,7 +97,7 @@ def generate_no_cache(model, input_ids, max_length, top_k, seed, device, use_aut
 
 
 @torch.no_grad()
-def generate_with_cache(model, input_ids, max_length, top_k, seed, device, use_autocast):
+def generate_with_cache(model, input_ids, max_length, top_k, temperature, seed, device, use_autocast):
     generator = torch.Generator(device=device)
     generator.manual_seed(seed)
     x = input_ids
@@ -96,6 +118,8 @@ def generate_with_cache(model, input_ids, max_length, top_k, seed, device, use_a
             else:
                 logits, _, past_kv = model(x[:, -1:], past_kv=past_kv, use_cache=True)
         logits = logits[:, -1, :]
+        if temperature != 1.0:
+            logits = logits / temperature
         probs = F.softmax(logits, dim=-1)
         topk_probs, topk_indices = torch.topk(probs, top_k, dim=-1)
         ix = torch.multinomial(topk_probs, 1, generator=generator)
@@ -124,6 +148,7 @@ def main():
     parser.add_argument("--prompt", type=str, default="Hello, I'm a language model,", help="提示词")
     parser.add_argument("--max_length", type=int, default=64, help="生成最大长度")
     parser.add_argument("--top_k", type=int, default=50, help="top-k 采样")
+    parser.add_argument("--temperature", type=float, default=1.0, help="采样温度")
     parser.add_argument("--num_return_sequences", type=int, default=1, help="生成条数")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     parser.add_argument("--dtype", type=str, default="float32", choices=["float32", "bfloat16"], help="推理精度")
@@ -168,6 +193,7 @@ def main():
 
     model = GPT(model_config, attention_class, position_encoding_class,
                 mlp_class=mlp_class, norm_class=norm_class)
+    _ensure_checkpoint_module_alias()
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     missing, unexpected = model.load_state_dict(ckpt["model"], strict=False)
     if missing:
@@ -220,7 +246,7 @@ def main():
     if run_no_cache:
         _reset_cuda_peak_memory(device)
         out_no_cache, time_no_cache = generate_no_cache(
-            model, tokens, args.max_length, args.top_k, args.seed, device, use_autocast, block_size=block_size
+            model, tokens, args.max_length, args.top_k, args.temperature, args.seed, device, use_autocast, block_size=block_size
         )
         peak_no_cache = _get_cuda_peak_memory_mb(device)
     else:
@@ -228,7 +254,7 @@ def main():
 
     _reset_cuda_peak_memory(device)
     out_cache, time_cache = generate_with_cache(
-        model, tokens, args.max_length, args.top_k, args.seed, device, use_autocast
+        model, tokens, args.max_length, args.top_k, args.temperature, args.seed, device, use_autocast
     )
     peak_cache = _get_cuda_peak_memory_mb(device)
 
