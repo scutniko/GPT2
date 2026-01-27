@@ -195,6 +195,21 @@ class GPT(nn.Module):
         if use_cache:
             return logits, loss, presents
         return logits, loss
+
+    def get_moe_aux_loss(self):
+        """
+        收集所有MoE MLP的辅助损失（如果存在）
+        Returns:
+            aux_loss: scalar 或 None
+        """
+        aux_losses = []
+        for block in self.transformer.h:
+            aux = getattr(block.mlp, "last_aux_loss", None)
+            if aux is not None:
+                aux_losses.append(aux)
+        if not aux_losses:
+            return None
+        return torch.stack(aux_losses).sum()
     
     @classmethod
     def from_pretrained(cls, model_type, attention_class=None, position_encoding_class=None,

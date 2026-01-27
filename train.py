@@ -48,6 +48,7 @@ def main():
         print(f"  位置编码: baseline, alibi, rope, sine")
         print(f"  注意力机制: mqa, gqa, mla")
         print(f"  激活函数: relu, silu, swiglu, geglu")
+        print(f"  MoE: moe")
         print(f"  归一化层: rmsnorm")
         sys.exit(1)
     
@@ -211,6 +212,7 @@ def main():
     warmup_steps = train_config["warmup_steps"]
     max_steps = train_config["max_steps"]
     weight_decay = train_config["weight_decay"]
+    moe_aux_weight = float(train_config.get("moe_aux_weight", 0.0))
 
     # 创建优化器
     optimizer = raw_model.configure_optimizers(
@@ -365,6 +367,10 @@ def main():
                 model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
             with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                 logits, loss = model(x, y)
+            if moe_aux_weight > 0:
+                aux_loss = raw_model.get_moe_aux_loss() if hasattr(raw_model, "get_moe_aux_loss") else None
+                if aux_loss is not None:
+                    loss = loss + moe_aux_weight * aux_loss
             loss = loss / grad_accum_steps
             loss_accum += loss.detach()
             loss.backward()
