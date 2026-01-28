@@ -1,4 +1,4 @@
-"""
+﻿"""
 数据加载模块
 包含token加载和数据迭代器
 """
@@ -40,7 +40,7 @@ class DataLoaderLite:
         x, y: 输入序列和目标序列
     """
     
-    def __init__(self, B, T, process_rank, num_processes, split, master_process=True):
+    def __init__(self, B, T, process_rank, num_processes, split, master_process=True, data_root=None):
         self.B = B
         self.T = T
         self.process_rank = process_rank
@@ -48,7 +48,8 @@ class DataLoaderLite:
         assert split in {'train', 'val'}
 
         # get the shard filenames
-        data_root = "/opt/train/data/nanogpt/edu_fineweb10B"
+        if data_root is None:
+            data_root = os.environ.get("DATASET_ROOT", "/opt/train/data/nanogpt/edu_fineweb10B")
         shards = os.listdir(data_root)
         shards = [s for s in shards if split in s]
         shards = sorted(shards)

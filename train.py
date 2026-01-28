@@ -37,6 +37,8 @@ def main():
                         help='从检查点恢复训练 (e.g., log/model_15000.pt)')
     parser.add_argument('--inference', type=str, default=None,
                         help='推理模式：加载检查点生成文本 (e.g., log/model_15000.pt)')
+    parser.add_argument('--data_root', type=str, default=None,
+                        help='离线token shard目录（包含train/val切分的.npy文件）')
     args = parser.parse_args()
 
     # 动态加载实验配置
@@ -62,6 +64,9 @@ def main():
     # 获取可选的MLP和归一化层配置（如果实验配置中没有定义，则为None）
     mlp_class = getattr(exp_module, 'MLP_CLASS', None)
     norm_class = getattr(exp_module, 'NORM_CLASS', None)
+    data_root = args.data_root
+    if data_root is None:
+        data_root = train_config.get("data_root")
     
     print(f"=" * 60)
     print(f"实验: {experiment_name}")
@@ -127,14 +132,16 @@ def main():
         process_rank=ddp_rank, 
         num_processes=ddp_world_size, 
         split="train", 
-        master_process=master_process
+        master_process=master_process,
+        data_root=data_root
     )
     val_loader = DataLoaderLite(
         B=B, T=T, 
         process_rank=ddp_rank, 
         num_processes=ddp_world_size, 
         split="val", 
-        master_process=master_process
+        master_process=master_process,
+        data_root=data_root
     )
 
     torch.set_float32_matmul_precision('high')
@@ -203,7 +210,7 @@ def main():
     if use_compile:
         model = torch.compile(model)
     if ddp:
-        model = DDP(model, device_ids=[ddp_local_rank])
+        model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
     raw_model = model.module if ddp else model  # 获取原始模型
 
     # 训练超参数
