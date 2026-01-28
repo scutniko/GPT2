@@ -1,4 +1,4 @@
-"""
+﻿"""
 Baseline实验配置
 标准GPT-2模型，使用多头注意力和可学习位置编码
 """
@@ -45,6 +45,7 @@ TRAINING_CONFIG = {
     "total_batch_size": 524288,  # 2**19, ~0.5M, in number of tokens
     "micro_batch_size": 1,
     "sequence_length": 1024,
+    "data_root": os.environ.get("DATASET_ROOT", "/opt/train/data/nanogpt/edu_fineweb10B"),
     "log_dir": os.path.join(project_root, "log_train", EXPERIMENT_NAME, "log"),
 }
 

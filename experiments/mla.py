@@ -1,4 +1,4 @@
-"""
+﻿"""
 MLA实验配置
 使用Multi-head Latent Attention的GPT-2模型
 """
@@ -54,6 +54,7 @@ TRAINING_CONFIG = {
     "total_batch_size": 524288,
     "micro_batch_size": 8,
     "sequence_length": 1024,
+    "data_root": os.environ.get("DATASET_ROOT", "/opt/train/data/nanogpt/edu_fineweb10B"),
     "log_dir": os.path.join(project_root, "log_train", EXPERIMENT_NAME, "log"),
 }
 
