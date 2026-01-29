@@ -4,3 +4,4 @@ log_train/
 .ipynb_checkpoints/
 .idea/
 code_dataset/
+decompress_gz.py

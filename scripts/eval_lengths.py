@@ -69,6 +69,7 @@ def main():
     parser.add_argument("--experiment", required=True, type=str, help="实验名，如 baseline/rope/alibi/sine")
     parser.add_argument("--checkpoint", required=True, type=str, help="checkpoint 路径")
     parser.add_argument("--lengths", required=True, type=str, help="逗号分隔的序列长度列表，如 512,1024,2048")
+    parser.add_argument("--data_root", required=True, type=str, help="离线 token shard 目录（包含 train/val 的 .npy）")
     parser.add_argument("--val_steps", type=int, default=20, help="每个长度评估的 batch 数")
     parser.add_argument("--batch_size", type=int, default=None, help="评估 batch size，默认用训练配置的 micro_batch_size")
     parser.add_argument("--device", type=str, default=None, help="cuda/mps/cpu，默认自动选择")
@@ -157,6 +158,7 @@ def main():
             num_processes=1,
             split="val",
             master_process=True,
+            data_root=args.data_root,
         )
         val_loader.reset()
 

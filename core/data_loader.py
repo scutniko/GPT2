@@ -49,7 +49,7 @@ class DataLoaderLite:
 
         # get the shard filenames
         if data_root is None:
-            data_root = os.environ.get("DATASET_ROOT", "/opt/train/data/nanogpt/edu_fineweb10B")
+            raise ValueError("data_root 未设置，请在训练时显式传入 --data_root")
         shards = os.listdir(data_root)
         shards = [s for s in shards if split in s]
         shards = sorted(shards)

@@ -35,10 +35,14 @@ def main():
                         help='实验名称 (baseline, alibi, rope, sine, mqa, gqa, mla)')
     parser.add_argument('--resume', type=str, default=None,
                         help='从检查点恢复训练 (e.g., log/model_15000.pt)')
+    parser.add_argument('--init_from', type=str, default=None,
+                        help='仅加载模型权重，不恢复优化器和step (e.g., log/model_15000.pt)')
     parser.add_argument('--inference', type=str, default=None,
                         help='推理模式：加载检查点生成文本 (e.g., log/model_15000.pt)')
-    parser.add_argument('--data_root', type=str, default=None,
+    parser.add_argument('--data_root', type=str, required=True,
                         help='离线token shard目录（包含train/val切分的.npy文件）')
+    parser.add_argument('--log_subdir', type=str, required=True,
+                        help='日志与checkpoint子目录（位于 log_train/<experiment>/ 下）')
     args = parser.parse_args()
 
     # 动态加载实验配置
@@ -65,8 +69,6 @@ def main():
     mlp_class = getattr(exp_module, 'MLP_CLASS', None)
     norm_class = getattr(exp_module, 'NORM_CLASS', None)
     data_root = args.data_root
-    if data_root is None:
-        data_root = train_config.get("data_root")
     
     print(f"=" * 60)
     print(f"实验: {experiment_name}")
@@ -150,6 +152,10 @@ def main():
     model = GPT(model_config, attention_class, position_encoding_class,
                 mlp_class=mlp_class, norm_class=norm_class)
     
+    if args.resume and args.init_from:
+        print("错误: --resume 与 --init_from 不能同时使用")
+        sys.exit(1)
+
     # 检查点恢复（在DDP包装之前）
     start_step = 0
     resume_checkpoint = None
@@ -160,6 +166,11 @@ def main():
         resume_checkpoint = ckpt
         if master_process:
             print(f"✓ 从 {args.resume} 恢复训练 (第 {start_step} 步开始)")
+    elif args.init_from:
+        ckpt = torch.load(args.init_from, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt['model'])
+        if master_process:
+            print(f"✓ 已加载模型权重（不恢复优化器/step）: {args.init_from}")
 
     # 推理模式
     if args.inference:
@@ -236,9 +247,10 @@ def main():
             print(f"✓ 恢复优化器状态")
 
     # 创建日志目录
-    log_dir = train_config["log_dir"]
+    log_dir = os.path.join(current_dir, "log_train", experiment_name, args.log_subdir)
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, "log.txt")
+    log_name = train_config.get("log_name", "log.txt")
+    log_file = os.path.join(log_dir, log_name)
     
     # 只在非恢复模式下清空日志文件
     if not args.resume:

@@ -145,6 +145,8 @@ def main():
     parser = argparse.ArgumentParser(description="KV cache 推理评估")
     parser.add_argument("--experiment", type=str, required=True, help="实验名称")
     parser.add_argument("--checkpoint", type=str, default=None, help="模型检查点路径（可选，默认自动找最新）")
+    parser.add_argument("--log_subdir", type=str, default=None, help="日志与checkpoint子目录（位于 log_train/<experiment>/ 下）")
+    parser.add_argument("--log_dir", type=str, default=None, help="日志与checkpoint目录（可选，优先级高于 log_subdir）")
     parser.add_argument("--prompt", type=str, default="Hello, I'm a language model,", help="提示词")
     parser.add_argument("--max_length", type=int, default=64, help="生成最大长度")
     parser.add_argument("--top_k", type=int, default=50, help="top-k 采样")
@@ -182,7 +184,14 @@ def main():
 
     checkpoint_path = args.checkpoint
     if checkpoint_path is None:
-        log_dir = train_config["log_dir"]
+        log_dir = None
+        if args.log_dir:
+            log_dir = args.log_dir
+        elif args.log_subdir:
+            log_dir = os.path.join(project_root, "log_train", experiment_name, args.log_subdir)
+        else:
+            print("错误: 未指定检查点时必须提供 --log_subdir 或 --log_dir")
+            return
         checkpoint_path = _find_latest_checkpoint(log_dir)
         if checkpoint_path is None:
             print(f"错误: 在 {log_dir} 未找到任何检查点")

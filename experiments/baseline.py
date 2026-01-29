@@ -43,9 +43,9 @@ TRAINING_CONFIG = {
     "max_steps": 19073,  # 19,073 steps is ~1 epoch, if data is 10B tokens and batch size 0.5M tokens
     "weight_decay": 0.1,
     "total_batch_size": 524288,  # 2**19, ~0.5M, in number of tokens
-    "micro_batch_size": 1,
+    "micro_batch_size": 8,
     "sequence_length": 1024,
-    "data_root": os.environ.get("DATASET_ROOT", "/opt/train/data/nanogpt/edu_fineweb10B"),
+    "log_name": "log.txt",
     "log_dir": os.path.join(project_root, "log_train", EXPERIMENT_NAME, "log"),
 }
 
