@@ -127,7 +127,7 @@ def generate_with_cache(model, input_ids, max_length, top_k, temperature, seed, 
         x = torch.cat((x, xcol), dim=1)
     _sync_if_cuda(device)
     t1 = time.time()
-    return x, t1 - t0
+    return x, t1 - t0, past_kv
 
 
 def _reset_cuda_peak_memory(device):
@@ -139,6 +139,21 @@ def _get_cuda_peak_memory_mb(device):
     if str(device).startswith("cuda"):
         return torch.cuda.max_memory_allocated() / (1024 ** 2)
     return None
+
+
+def _format_cache_shape(past_kv):
+    if past_kv is None or len(past_kv) == 0 or past_kv[0] is None:
+        return "无"
+    first = past_kv[0]
+    if isinstance(first, (tuple, list)):
+        shapes = []
+        for item in first:
+            if item is None:
+                shapes.append("None")
+            else:
+                shapes.append(str(tuple(item.shape)))
+        return " / ".join(shapes)
+    return str(tuple(first.shape))
 
 
 def main():
@@ -262,7 +277,7 @@ def main():
         print("提示: 超过训练长度时仅使用KV cache路径生成，不运行无cache路径")
 
     _reset_cuda_peak_memory(device)
-    out_cache, time_cache = generate_with_cache(
+    out_cache, time_cache, past_kv = generate_with_cache(
         model, tokens, args.max_length, args.top_k, args.temperature, args.seed, device, use_autocast
     )
     peak_cache = _get_cuda_peak_memory_mb(device)
@@ -293,6 +308,7 @@ def main():
             print(f"首个不一致位置: batch={first[0]}, pos={first[1]}")
     else:
         print("逐token输出一致: 不检查（仅运行KV cache路径）")
+    print(f"首层KV cache形状: {_format_cache_shape(past_kv)}")
 
     print("\n==== 显存占用（CUDA） ====")
     if str(device).startswith("cuda"):

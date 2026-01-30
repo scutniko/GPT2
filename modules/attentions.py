@@ -337,7 +337,8 @@ class MLAAttention(nn.Module):
     def forward(self, x, past_kv=None, use_cache=False):
         # 输入x的shape是[B, T, C]，最终输出y的shape是[B, T, C]
         B, T, C = x.size()
-        past_len = past_kv[0].size(2) if past_kv is not None else 0
+        past_latent = past_kv[0] if past_kv is not None else None
+        past_len = past_latent.size(1) if past_latent is not None else 0
         
         # === MLA 前向传播 ===
         
@@ -349,30 +350,47 @@ class MLAAttention(nn.Module):
         kv_latent = latent[:, :, :self.kv_lora_rank]  # [B, T, kv_lora_rank]
         q_latent = latent[:, :, self.kv_lora_rank:]   # [B, T, q_lora_rank]
         
-        # 步骤2: 从潜在空间解压 KV
-        # [B, T, kv_lora_rank] -> [B, T, 2 * C]
+        # 拼接latent cache（只缓存KV latent）
+        if past_latent is not None:
+            kv_latent = torch.cat((past_latent, kv_latent), dim=1)
+        
+        # 步骤2: 从潜在空间解压 KV（仅用于当前attention计算）
+        # [B, T_total, kv_lora_rank] -> [B, T_total, 2 * C]
         kv = self.kv_up_proj(kv_latent)
-        k, v = kv.split(self.n_embd, dim=2)  # 分离 K 和 V，各为 [B, T, C]
+        k, v = kv.split(self.n_embd, dim=2)  # 分离 K 和 V，各为 [B, T_total, C]
         
         # 步骤3: 从潜在空间解压 Q
         # [B, T, q_lora_rank] -> [B, T, C]
         q = self.q_up_proj(q_latent)
         
         # 步骤4: 重塑为多头格式
-        # [B, T, C] -> [B, n_head, T, head_dim]
+        # Q: [B, T, C] -> [B, n_head, T, head_dim]
+        # K/V: [B, T_total, C] -> [B, n_head, T_total, head_dim]
         q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
-        k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
-        v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        total_len = kv_latent.size(1)
+        k = k.view(B, total_len, self.n_head, self.head_dim).transpose(1, 2)
+        v = v.view(B, total_len, self.n_head, self.head_dim).transpose(1, 2)
         
         # 应用 RoPE（如果有）
         if self.rope is not None:
-            q, k = self.rope(q, k, start_pos=past_len)
-        
-        # 拼接KV cache
-        if past_kv is not None:
-            past_k, past_v = past_kv
-            k = torch.cat((past_k, k), dim=2)
-            v = torch.cat((past_v, v), dim=2)
+            def _apply_rope_segment(x, start_pos):
+                seq_len = x.size(2)
+                end_pos = start_pos + seq_len
+                if end_pos > self.rope.cos_cached.shape[2]:
+                    self.rope._init_cache(end_pos)
+                cos = self.rope.cos_cached[:, :, start_pos:end_pos, :]
+                sin = self.rope.sin_cached[:, :, start_pos:end_pos, :]
+                return self.rope.apply_rotary_emb(x, cos, sin)
+            
+            if past_len == 0:
+                q, k = self.rope(q, k, start_pos=0)
+            else:
+                q = _apply_rope_segment(q, start_pos=past_len)
+                k_past = k[:, :, :past_len, :]
+                k_curr = k[:, :, past_len:, :]
+                k_past = _apply_rope_segment(k_past, start_pos=0)
+                k_curr = _apply_rope_segment(k_curr, start_pos=past_len)
+                k = torch.cat((k_past, k_curr), dim=2)
         
         # 应用 ALiBi（如果有）
         attn_bias = None
@@ -391,7 +409,7 @@ class MLAAttention(nn.Module):
         # 步骤7: 输出投影
         y = self.c_proj(y)
         if use_cache:
-            present_kv = (k, v)
+            present_kv = (kv_latent,)
             return y, present_kv
         return y
 

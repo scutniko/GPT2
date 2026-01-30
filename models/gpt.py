@@ -145,7 +145,12 @@ class GPT(nn.Module):
         B, T = idx.size()
         past_len = 0
         if past_kv is not None and len(past_kv) > 0 and past_kv[0] is not None:
-            past_len = past_kv[0][0].size(2)
+            first_cache = past_kv[0][0] if isinstance(past_kv[0], (tuple, list)) else past_kv[0]
+            if first_cache is not None:
+                if first_cache.dim() == 4:
+                    past_len = first_cache.size(2)
+                elif first_cache.dim() == 3:
+                    past_len = first_cache.size(1)
         # 确保序列长度不超过最大序列长度
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
         
