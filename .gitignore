@@ -6,3 +6,4 @@ log_train/
 code_dataset/
 decompress_gz.py
 rename_npy_to_txt.py
+README.md

@@ -12,4 +12,6 @@ class GPTConfig:
     n_layer: int = 12  # number of layers
     n_head: int = 12  # number of heads
     n_embd: int = 768  # embedding dimension
+    init_method: str = "default"  # 初始化方法: default / xavier / kaiming
+    init_distribution: str = "normal"  # 分布: normal / uniform
 

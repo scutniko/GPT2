@@ -45,6 +45,8 @@ MODEL_CONFIG = MoEConfig(
     moe_capacity_factor=1.0,
     moe_router_noise=0.0,
     moe_expert_type="mlp",
+    init_method="default",
+    init_distribution="normal",
 )
 
 # 注意力机制

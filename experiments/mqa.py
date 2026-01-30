@@ -27,6 +27,8 @@ MODEL_CONFIG = GPTConfig(
     n_layer=12,
     n_head=12,
     n_embd=768,
+    init_method="default",
+    init_distribution="normal",
 )
 
 # 注意力机制 - MQA

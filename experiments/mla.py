@@ -36,6 +36,8 @@ MODEL_CONFIG = MLAConfig(
     n_embd=768,
     kv_lora_rank=192,
     q_lora_rank=384,
+    init_method="default",
+    init_distribution="normal",
 )
 
 # 注意力机制 - MLA

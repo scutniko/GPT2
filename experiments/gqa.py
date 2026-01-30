@@ -34,6 +34,8 @@ MODEL_CONFIG = GQAConfig(
     n_head=12,
     n_embd=768,
     n_kv_head=4,  # 4 KV heads for 12 Q heads
+    init_method="default",
+    init_distribution="normal",
 )
 
 # 注意力机制 - GQA

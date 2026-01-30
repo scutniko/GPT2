@@ -27,6 +27,8 @@ MODEL_CONFIG = GPTConfig(
     n_layer=12,
     n_head=12,
     n_embd=768,
+    init_method="default",
+    init_distribution="normal",
 )
 
 # 注意力机制
@@ -39,8 +41,8 @@ POSITION_ENCODING_CLASS = RoPE
 TRAINING_CONFIG = {
     "max_lr": 6e-4,
     "min_lr": 6e-5,
-    "warmup_steps": 715,
-    "max_steps": 19073,
+    "warmup_steps": 50,
+    "max_steps": 1518,
     "weight_decay": 0.1,
     "total_batch_size": 524288,
     "micro_batch_size": 8,
