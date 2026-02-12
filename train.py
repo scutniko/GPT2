@@ -8,6 +8,7 @@ import sys
 import time
 import argparse
 import importlib
+import gc
 import torch
 import torch.nn.functional as F
 from torch.distributed import init_process_group, destroy_process_group
@@ -25,6 +26,27 @@ from core.training_utils import get_lr, get_most_likely_row
 from models.gpt import GPT
 
 from core.config import GPTConfig
+
+
+def load_checkpoint_low_mem(path, map_location="cpu"):
+    """
+    低峰值内存加载checkpoint：
+    - 优先使用 mmap 减少恢复时内存峰值
+    - 兼容旧版本 PyTorch（无 mmap 参数）
+    """
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False, mmap=True)
+    except TypeError:
+        return torch.load(path, map_location=map_location, weights_only=False)
+
+
+def optimizer_to_device(optimizer, device):
+    """将优化器状态中的Tensor迁移到指定设备。"""
+    for state in optimizer.state.values():
+        for k, v in state.items():
+            if torch.is_tensor(v):
+                state[k] = v.to(device, non_blocking=True)
+
 
 def main():
     """主训练函数"""
@@ -158,17 +180,23 @@ def main():
 
     # 检查点恢复（在DDP包装之前）
     start_step = 0
-    resume_checkpoint = None
+    resume_optimizer_state = None
+    resume_loader_state = None
     if args.resume:
-        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        ckpt = load_checkpoint_low_mem(args.resume, map_location="cpu")
         model.load_state_dict(ckpt['model'])
         start_step = ckpt['step'] + 1
-        resume_checkpoint = ckpt
+        resume_optimizer_state = ckpt.get('optimizer', None)
+        resume_loader_state = ckpt.get('train_loader_state', None)
+        del ckpt
+        gc.collect()
         if master_process:
             print(f"✓ 从 {args.resume} 恢复训练 (第 {start_step} 步开始)")
     elif args.init_from:
-        ckpt = torch.load(args.init_from, map_location=device, weights_only=False)
+        ckpt = load_checkpoint_low_mem(args.init_from, map_location="cpu")
         model.load_state_dict(ckpt['model'])
+        del ckpt
+        gc.collect()
         if master_process:
             print(f"✓ 已加载模型权重（不恢复优化器/step）: {args.init_from}")
 
@@ -176,8 +204,10 @@ def main():
     if args.inference:
         if master_process:
             print(f"✓ 推理模式：加载模型权重 {args.inference}")
-        ckpt = torch.load(args.inference, map_location=device, weights_only=False)
+        ckpt = load_checkpoint_low_mem(args.inference, map_location="cpu")
         model.load_state_dict(ckpt['model'])
+        del ckpt
+        gc.collect()
         model.to(device)
         model.eval()
         
@@ -241,8 +271,11 @@ def main():
     )
 
     # 恢复优化器状态
-    if resume_checkpoint is not None and 'optimizer' in resume_checkpoint:
-        optimizer.load_state_dict(resume_checkpoint['optimizer'])
+    if resume_optimizer_state is not None:
+        optimizer.load_state_dict(resume_optimizer_state)
+        optimizer_to_device(optimizer, device)
+        del resume_optimizer_state
+        gc.collect()
         if master_process:
             print(f"✓ 恢复优化器状态")
 
@@ -258,9 +291,9 @@ def main():
             pass
 
     # 恢复数据加载器状态
-    if resume_checkpoint is not None and 'train_loader_state' in resume_checkpoint:
-        train_loader.current_shard = resume_checkpoint['train_loader_state']['current_shard']
-        train_loader.current_position = resume_checkpoint['train_loader_state']['current_position']
+    if resume_loader_state is not None:
+        train_loader.current_shard = resume_loader_state['current_shard']
+        train_loader.current_position = resume_loader_state['current_position']
         train_loader.tokens = load_tokens(train_loader.shards[train_loader.current_shard])
         if master_process:
             print(f"✓ 恢复数据加载器状态: shard {train_loader.current_shard}, position {train_loader.current_position}")
