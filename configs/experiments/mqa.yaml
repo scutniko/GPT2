@@ -1,5 +1,0 @@
-base: ../base.yaml
-experiment_name: mqa
-
-components:
-  attention: mqa

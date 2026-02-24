@@ -1,5 +1,0 @@
-base: ../base.yaml
-experiment_name: sine
-
-components:
-  position_encoding: sine

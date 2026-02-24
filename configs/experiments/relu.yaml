@@ -1,5 +1,0 @@
-base: ../base.yaml
-experiment_name: relu
-
-components:
-  mlp: relu

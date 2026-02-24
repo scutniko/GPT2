@@ -5,4 +5,3 @@ transformers>=4.20.0
 requests>=2.25.0
 tqdm>=4.60.0
 datasets>=2.0.0
-PyYAML>=6.0

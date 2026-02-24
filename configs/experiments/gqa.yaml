@@ -1,8 +1,0 @@
-base: ../base.yaml
-experiment_name: gqa
-
-model:
-  n_kv_head: 4
-
-components:
-  attention: gqa

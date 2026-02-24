@@ -1,9 +1,0 @@
-base: ../base.yaml
-experiment_name: rope
-
-components:
-  position_encoding: rope
-
-training:
-  warmup_steps: 50
-  max_steps: 1518
