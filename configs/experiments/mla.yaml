@@ -1,0 +1,9 @@
+base: ../base.yaml
+experiment_name: mla
+
+model:
+  kv_lora_rank: 192
+  q_lora_rank: 384
+
+components:
+  attention: mla

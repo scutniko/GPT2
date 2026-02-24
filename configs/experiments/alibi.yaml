@@ -1,0 +1,5 @@
+base: ../base.yaml
+experiment_name: alibi
+
+components:
+  position_encoding: alibi
