@@ -1,0 +1,10 @@
+base:
+  - ../base/model_124m.yaml
+  - ../base/train_default.yaml
+experiment_name: alibi
+components:
+  attention: base
+  position_encoding: alibi
+  mlp: default
+  norm: layernorm
+

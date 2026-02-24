@@ -5,452 +5,174 @@
 
 import os
 import sys
-import time
-import argparse
-import importlib
-import gc
+
+import tiktoken
 import torch
-import torch.nn.functional as F
-from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-import torch.distributed as dist
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-import tiktoken
-from hellaswag import render_example, iterate_examples
-from core.data_loader import DataLoaderLite, load_tokens
-from core.training_utils import get_lr, get_most_likely_row
+from core.checkpoint import (
+    ensure_log_file,
+    load_model_for_train,
+    restore_loader_state,
+    restore_optimizer_state,
+)
+from core.cli import parse_args
+from core.data_loader import DataLoaderLite
+from core.evaluator import run_inference
+from core.experiment import load_experiment_spec
+from core.runtime import cleanup_runtime, set_seed, setup_runtime
+from core.trainer import run_train_loop
 from models.gpt import GPT
 
-from core.config import GPTConfig
 
-
-def load_checkpoint_low_mem(path, map_location="cpu"):
-    """
-    低峰值内存加载checkpoint：
-    - 优先使用 mmap 减少恢复时内存峰值
-    - 兼容旧版本 PyTorch（无 mmap 参数）
-    """
-    try:
-        return torch.load(path, map_location=map_location, weights_only=False, mmap=True)
-    except TypeError:
-        return torch.load(path, map_location=map_location, weights_only=False)
-
-
-def optimizer_to_device(optimizer, device):
-    """将优化器状态中的Tensor迁移到指定设备。"""
-    for state in optimizer.state.values():
-        for k, v in state.items():
-            if torch.is_tensor(v):
-                state[k] = v.to(device, non_blocking=True)
+def print_experiment_info(spec):
+    """打印实验配置信息。"""
+    print("=" * 60)
+    print(f"实验: {spec.experiment_name}")
+    print(f"注意力机制: {spec.attention_class.__name__}")
+    print(f"位置编码: {spec.position_encoding_class.__name__}")
+    if spec.mlp_class is not None:
+        print(f"MLP类型: {spec.mlp_class.__name__}")
+    if spec.norm_class is not None:
+        print(f"归一化层: {spec.norm_class.__name__}")
+    print("=" * 60)
 
 
 def main():
-    """主训练函数"""
-    
-    # 解析命令行参数
-    parser = argparse.ArgumentParser(description='GPT-2 Training with Ablation Studies')
-    parser.add_argument('--experiment', type=str, required=True,
-                        help='实验名称 (baseline, alibi, rope, sine, mqa, gqa, mla)')
-    parser.add_argument('--resume', type=str, default=None,
-                        help='从检查点恢复训练 (e.g., log/model_15000.pt)')
-    parser.add_argument('--init_from', type=str, default=None,
-                        help='仅加载模型权重，不恢复优化器和step (e.g., log/model_15000.pt)')
-    parser.add_argument('--inference', type=str, default=None,
-                        help='推理模式：加载检查点生成文本 (e.g., log/model_15000.pt)')
-    parser.add_argument('--data_root', type=str, required=True,
-                        help='离线token shard目录（包含train/val切分的.npy文件）')
-    parser.add_argument('--log_subdir', type=str, required=True,
-                        help='日志与checkpoint子目录（位于 log_train/<experiment>/ 下）')
-    args = parser.parse_args()
+    args = parse_args()
 
-    # 动态加载实验配置
     try:
-        exp_module = importlib.import_module(f'experiments.{args.experiment}')
-    except ImportError:
-        print(f"错误: 找不到实验配置 '{args.experiment}'")
-        print(f"可用的实验:")
-        print(f"  位置编码: baseline, alibi, rope, sine")
-        print(f"  注意力机制: mqa, gqa, mla")
-        print(f"  激活函数: relu, silu, swiglu, geglu")
-        print(f"  MoE: moe")
-        print(f"  归一化层: rmsnorm")
+        spec = load_experiment_spec(args.config)
+    except ValueError as exc:
+        print(str(exc))
         sys.exit(1)
-    
-    # 获取配置
-    experiment_name = exp_module.EXPERIMENT_NAME
-    model_config = exp_module.MODEL_CONFIG
-    attention_class = exp_module.ATTENTION_CLASS
-    position_encoding_class = exp_module.POSITION_ENCODING_CLASS
-    train_config = exp_module.TRAINING_CONFIG
-    
-    # 获取可选的MLP和归一化层配置（如果实验配置中没有定义，则为None）
-    mlp_class = getattr(exp_module, 'MLP_CLASS', None)
-    norm_class = getattr(exp_module, 'NORM_CLASS', None)
-    data_root = args.data_root
-    
-    print(f"=" * 60)
-    print(f"实验: {experiment_name}")
-    print(f"注意力机制: {attention_class.__name__}")
-    print(f"位置编码: {position_encoding_class.__name__}")
-    if mlp_class is not None:
-        print(f"MLP类型: {mlp_class.__name__}")
-    if norm_class is not None:
-        print(f"归一化层: {norm_class.__name__}")
-    print(f"=" * 60)
-    
-    # 设置DDP (分布式数据并行)
-    ddp = int(os.environ.get('RANK', -1)) != -1  # 是否为DDP运行
-    if ddp:
-        # DDP需要CUDA
-        assert torch.cuda.is_available(), "DDP需要CUDA支持"
-        init_process_group(backend='nccl')
-        ddp_rank = int(os.environ['RANK'])
-        ddp_local_rank = int(os.environ['LOCAL_RANK'])
-        ddp_world_size = int(os.environ['WORLD_SIZE'])
-        device = f'cuda:{ddp_local_rank}'
-        torch.cuda.set_device(device)
-        master_process = ddp_rank == 0  # 主进程负责日志和保存
-    else:
-        # 单卡训练
-        ddp_rank = 0
-        ddp_local_rank = 0
-        ddp_world_size = 1
-        master_process = True
-        # 自动检测设备
-        device = "cpu"
-        if torch.cuda.is_available():
-            device = "cuda"
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            device = "mps"
-        print(f"使用设备: {device}")
 
-    device_type = "cuda" if device.startswith("cuda") else "cpu"
+    print_experiment_info(spec)
 
-    # 设置随机种子
-    torch.manual_seed(1337)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(1337)
+    runtime_ctx = setup_runtime()
+    set_seed(1337)
 
-    # 初始化tokenizer
     enc = tiktoken.get_encoding("gpt2")
 
-    # 训练配置
+    train_config = spec.train_config
     total_batch_size = train_config["total_batch_size"]
     B = train_config["micro_batch_size"]
     T = train_config["sequence_length"]
-    assert total_batch_size % (B * T * ddp_world_size) == 0, \
+    assert total_batch_size % (B * T * runtime_ctx.ddp_world_size) == 0, (
         "total_batch_size必须能被B * T * ddp_world_size整除"
-    grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
-    
-    if master_process:
+    )
+    grad_accum_steps = total_batch_size // (B * T * runtime_ctx.ddp_world_size)
+
+    if runtime_ctx.master_process:
         print(f"总batch size: {total_batch_size}")
         print(f"=> 梯度累积步数: {grad_accum_steps}")
 
-    # 创建数据加载器
     train_loader = DataLoaderLite(
-        B=B, T=T, 
-        process_rank=ddp_rank, 
-        num_processes=ddp_world_size, 
-        split="train", 
-        master_process=master_process,
-        data_root=data_root
+        B=B,
+        T=T,
+        process_rank=runtime_ctx.ddp_rank,
+        num_processes=runtime_ctx.ddp_world_size,
+        split="train",
+        master_process=runtime_ctx.master_process,
+        data_root=args.data_root,
     )
     val_loader = DataLoaderLite(
-        B=B, T=T, 
-        process_rank=ddp_rank, 
-        num_processes=ddp_world_size, 
-        split="val", 
-        master_process=master_process,
-        data_root=data_root
+        B=B,
+        T=T,
+        process_rank=runtime_ctx.ddp_rank,
+        num_processes=runtime_ctx.ddp_world_size,
+        split="val",
+        master_process=runtime_ctx.master_process,
+        data_root=args.data_root,
     )
 
-    torch.set_float32_matmul_precision('high')
+    torch.set_float32_matmul_precision("high")
 
-    # 创建模型
-    model = GPT(model_config, attention_class, position_encoding_class,
-                mlp_class=mlp_class, norm_class=norm_class)
-    
-    if args.resume and args.init_from:
-        print("错误: --resume 与 --init_from 不能同时使用")
-        sys.exit(1)
+    model = GPT(
+        spec.model_config,
+        attention_class=spec.attention_class,
+        position_encoding_class=spec.position_encoding_class,
+        mlp_class=spec.mlp_class,
+        norm_class=spec.norm_class,
+    )
 
-    # 检查点恢复（在DDP包装之前）
-    start_step = 0
-    resume_optimizer_state = None
-    resume_loader_state = None
-    if args.resume:
-        ckpt = load_checkpoint_low_mem(args.resume, map_location="cpu")
-        model.load_state_dict(ckpt['model'])
-        start_step = ckpt['step'] + 1
-        resume_optimizer_state = ckpt.get('optimizer', None)
-        resume_loader_state = ckpt.get('train_loader_state', None)
-        del ckpt
-        gc.collect()
-        if master_process:
-            print(f"✓ 从 {args.resume} 恢复训练 (第 {start_step} 步开始)")
-    elif args.init_from:
-        ckpt = load_checkpoint_low_mem(args.init_from, map_location="cpu")
-        model.load_state_dict(ckpt['model'])
-        del ckpt
-        gc.collect()
-        if master_process:
-            print(f"✓ 已加载模型权重（不恢复优化器/step）: {args.init_from}")
+    start_step, resume_optimizer_state, resume_loader_state = load_model_for_train(
+        model=model,
+        resume_path=args.resume,
+        init_from_path=args.init_from,
+        master_process=runtime_ctx.master_process,
+    )
 
-    # 推理模式
     if args.inference:
-        if master_process:
-            print(f"✓ 推理模式：加载模型权重 {args.inference}")
-        ckpt = load_checkpoint_low_mem(args.inference, map_location="cpu")
-        model.load_state_dict(ckpt['model'])
-        del ckpt
-        gc.collect()
-        model.to(device)
-        model.eval()
-        
-        # 生成文本5次
-        num_return_sequences = 5
-        max_length = 32
-        prompt = "Hello, I'm a language model,"
-        tokens = enc.encode(prompt)
-        tokens = torch.tensor(tokens, dtype=torch.long)
-        tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
-        xgen = tokens.to(device)
-        sample_rng = torch.Generator(device=device)
-        sample_rng.manual_seed(42)
-        
-        if master_process:
-            print(f"\n{'='*60}")
-            print(f"提示词: {prompt}")
-            print(f"{'='*60}\n")
-        
-        while xgen.size(1) < max_length:
-            with torch.no_grad():
-                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                    logits, loss = model(xgen)
-                logits = logits[:, -1, :]
-                probs = F.softmax(logits, dim=-1)
-                topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-                ix = torch.multinomial(topk_probs, 1, generator=sample_rng)
-                xcol = torch.gather(topk_indices, -1, ix)
-                xgen = torch.cat((xgen, xcol), dim=1)
-        
-        if master_process:
-            for i in range(num_return_sequences):
-                tokens = xgen[i, :max_length].tolist()
-                decoded = enc.decode(tokens)
-                print(f"生成 {i+1}: {decoded}\n")
-        
+        run_inference(
+            model=model,
+            checkpoint_path=args.inference,
+            device=runtime_ctx.device,
+            device_type=runtime_ctx.device_type,
+            enc=enc,
+            master_process=runtime_ctx.master_process,
+        )
+        cleanup_runtime(runtime_ctx)
         sys.exit(0)
-    
-    model.to(device)
+
+    model.to(runtime_ctx.device)
     use_compile = False  # torch.compile与HellaSwag评估和生成有冲突
     if use_compile:
         model = torch.compile(model)
-    if ddp:
-        model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
-    raw_model = model.module if ddp else model  # 获取原始模型
+    if runtime_ctx.ddp:
+        model = DDP(model, device_ids=[runtime_ctx.ddp_local_rank], find_unused_parameters=True)
+    raw_model = model.module if runtime_ctx.ddp else model
 
-    # 训练超参数
-    max_lr = train_config["max_lr"]
-    min_lr = train_config["min_lr"]
-    warmup_steps = train_config["warmup_steps"]
-    max_steps = train_config["max_steps"]
-    weight_decay = train_config["weight_decay"]
-    moe_aux_weight = float(train_config.get("moe_aux_weight", 0.0))
-
-    # 创建优化器
     optimizer = raw_model.configure_optimizers(
-        weight_decay=weight_decay,
-        learning_rate=max_lr,
-        device_type=device_type,
-        master_process=master_process
+        weight_decay=train_config["weight_decay"],
+        learning_rate=train_config["max_lr"],
+        device_type=runtime_ctx.device_type,
+        master_process=runtime_ctx.master_process,
     )
 
-    # 恢复优化器状态
-    if resume_optimizer_state is not None:
-        optimizer.load_state_dict(resume_optimizer_state)
-        optimizer_to_device(optimizer, device)
-        del resume_optimizer_state
-        gc.collect()
-        if master_process:
-            print(f"✓ 恢复优化器状态")
+    restore_optimizer_state(
+        optimizer=optimizer,
+        resume_optimizer_state=resume_optimizer_state,
+        device=runtime_ctx.device,
+        master_process=runtime_ctx.master_process,
+    )
 
-    # 创建日志目录
-    log_dir = os.path.join(current_dir, "log_train", experiment_name, args.log_subdir)
+    log_dir = os.path.join(current_dir, "log_train", spec.experiment_name, args.log_subdir)
     os.makedirs(log_dir, exist_ok=True)
     log_name = train_config.get("log_name", "log.txt")
     log_file = os.path.join(log_dir, log_name)
-    
-    # 只在非恢复模式下清空日志文件
-    if not args.resume:
-        with open(log_file, "w") as f:
-            pass
+    ensure_log_file(log_file, resume=bool(args.resume))
 
-    # 恢复数据加载器状态
-    if resume_loader_state is not None:
-        train_loader.current_shard = resume_loader_state['current_shard']
-        train_loader.current_position = resume_loader_state['current_position']
-        train_loader.tokens = load_tokens(train_loader.shards[train_loader.current_shard])
-        if master_process:
-            print(f"✓ 恢复数据加载器状态: shard {train_loader.current_shard}, position {train_loader.current_position}")
-            
-            # 截断日志文件
-            if os.path.exists(log_file):
-                with open(log_file, "r") as f:
-                    lines = f.readlines()
-                with open(log_file, "w") as f:
-                    for line in lines:
-                        try:
-                            step_in_line = int(line.split()[0])
-                            if step_in_line < start_step:
-                                f.write(line)
-                        except (ValueError, IndexError):
-                            f.write(line)
-                print(f"✓ 日志文件已截断至第 {start_step} 步之前")
+    restore_loader_state(
+        train_loader=train_loader,
+        resume_loader_state=resume_loader_state,
+        start_step=start_step,
+        log_file=log_file,
+        master_process=runtime_ctx.master_process,
+    )
 
-    # 训练循环
-    for step in range(start_step, max_steps):
-        t0 = time.time()
-        last_step = (step == max_steps - 1)
+    run_train_loop(
+        model=model,
+        raw_model=raw_model,
+        optimizer=optimizer,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        runtime_ctx=runtime_ctx,
+        train_config=train_config,
+        enc=enc,
+        log_file=log_file,
+        log_dir=log_dir,
+        start_step=start_step,
+        grad_accum_steps=grad_accum_steps,
+        use_compile=use_compile,
+    )
 
-        # 验证评估
-        if step % 250 == 0 or last_step:
-            model.eval()
-            val_loader.reset()
-            with torch.no_grad():
-                val_loss_accum = 0.0
-                val_loss_steps = 20
-                for _ in range(val_loss_steps):
-                    x, y = val_loader.next_batch()
-                    x, y = x.to(device), y.to(device)
-                    with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                        logits, loss = model(x, y)
-                    loss = loss / val_loss_steps
-                    val_loss_accum += loss.detach()
-            if ddp:
-                dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
-            if master_process:
-                print(f"validation loss: {val_loss_accum.item():.4f}")
-                with open(log_file, "a") as f:
-                    f.write(f"{step} val {val_loss_accum.item():.4f}\n")
-                if step > 0 and (step % 250 == 0 or last_step):
-                    # 保存检查点
-                    checkpoint_path = os.path.join(log_dir, f"model_{step:05d}.pt")
-                    checkpoint = {
-                        'model': raw_model.state_dict(),
-                        'config': raw_model.config,
-                        'step': step,
-                        'val_loss': val_loss_accum.item(),
-                        'optimizer': optimizer.state_dict(),
-                        'train_loader_state': {
-                            'current_shard': train_loader.current_shard,
-                            'current_position': train_loader.current_position,
-                        }
-                    }
-                    torch.save(checkpoint, checkpoint_path)
-
-        # HellaSwag评估
-        if (step % 250 == 0 or last_step) and (not use_compile):
-            num_correct_norm = 0
-            num_total = 0
-            for i, example in enumerate(iterate_examples("val")):
-                if i % ddp_world_size != ddp_rank:
-                    continue
-                _, tokens, mask, label = render_example(example)
-                tokens = tokens.to(device)
-                mask = mask.to(device)
-                with torch.no_grad():
-                    with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                        logits, loss = model(tokens)
-                    pred_norm = get_most_likely_row(tokens, mask, logits)
-                num_total += 1
-                num_correct_norm += int(pred_norm == label)
-            if ddp:
-                num_total = torch.tensor(num_total, dtype=torch.long, device=device)
-                num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
-                dist.all_reduce(num_total, op=dist.ReduceOp.SUM)
-                dist.all_reduce(num_correct_norm, op=dist.ReduceOp.SUM)
-                num_total = num_total.item()
-                num_correct_norm = num_correct_norm.item()
-            acc_norm = num_correct_norm / num_total
-            if master_process:
-                print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}")
-                with open(log_file, "a") as f:
-                    f.write(f"{step} hella {acc_norm:.4f}\n")
-        
-        # 文本生成
-        if ((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
-            model.eval()
-            num_return_sequences = 4
-            max_length = 32
-            tokens = enc.encode("Hello, I'm a language model,")
-            tokens = torch.tensor(tokens, dtype=torch.long)
-            tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
-            xgen = tokens.to(device)
-            sample_rng = torch.Generator(device=device)
-            sample_rng.manual_seed(42 + ddp_rank)
-            while xgen.size(1) < max_length:
-                with torch.no_grad():
-                    with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                        logits, loss = model(xgen)
-                    logits = logits[:, -1, :]
-                    probs = F.softmax(logits, dim=-1)
-                    topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-                    ix = torch.multinomial(topk_probs, 1, generator=sample_rng)
-                    xcol = torch.gather(topk_indices, -1, ix)
-                    xgen = torch.cat((xgen, xcol), dim=1)
-            for i in range(num_return_sequences):
-                tokens = xgen[i, :max_length].tolist()
-                decoded = enc.decode(tokens)
-                print(f"rank {ddp_rank} sample {i}: {decoded}")
-
-        # 训练步骤
-        model.train()
-        optimizer.zero_grad()
-        loss_accum = 0.0
-        for micro_step in range(grad_accum_steps):
-            x, y = train_loader.next_batch()
-            x, y = x.to(device), y.to(device)
-            if ddp:
-                model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
-            with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                logits, loss = model(x, y)
-            if moe_aux_weight > 0:
-                aux_loss = raw_model.get_moe_aux_loss() if hasattr(raw_model, "get_moe_aux_loss") else None
-                if aux_loss is not None:
-                    loss = loss + moe_aux_weight * aux_loss
-            loss = loss / grad_accum_steps
-            loss_accum += loss.detach()
-            loss.backward()
-        if ddp:
-            dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
-        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        
-        # 学习率调度
-        lr = get_lr(step, warmup_steps, max_steps, max_lr, min_lr)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
-        optimizer.step()
-        
-        if device_type == "cuda":
-            torch.cuda.synchronize()
-        t1 = time.time()
-        dt = t1 - t0
-        tokens_processed = train_loader.B * train_loader.T * grad_accum_steps * ddp_world_size
-        tokens_per_sec = tokens_processed / dt
-        if master_process:
-            print(f"step {step:5d} | loss: {loss_accum.item():.6f} | lr {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
-            with open(log_file, "a") as f:
-                f.write(f"{step} train {loss_accum.item():.6f}\n")
-
-    if ddp:
-        destroy_process_group()
+    cleanup_runtime(runtime_ctx)
 
 
 if __name__ == "__main__":
     main()
-

@@ -17,6 +17,7 @@ if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
 from core.data_loader import DataLoaderLite
+from core.experiment import load_experiment_spec
 from models.gpt import GPT
 from modules.position_encodings import LearnedPositionEncoding, SinusoidalPositionalEncoding
 
@@ -66,7 +67,7 @@ def pick_device(name):
 
 def main():
     parser = argparse.ArgumentParser(description="多序列长度验证评估")
-    parser.add_argument("--experiment", required=True, type=str, help="实验名，如 baseline/rope/alibi/sine")
+    parser.add_argument("--config", required=True, type=str, help="实验配置路径或名称（如 baseline）")
     parser.add_argument("--checkpoint", required=True, type=str, help="checkpoint 路径")
     parser.add_argument("--lengths", required=True, type=str, help="逗号分隔的序列长度列表，如 512,1024,2048")
     parser.add_argument("--data_root", required=True, type=str, help="离线 token shard 目录（包含 train/val 的 .npy）")
@@ -79,16 +80,16 @@ def main():
     max_len = max(lengths)
 
     try:
-        exp_module = importlib.import_module(f"experiments.{args.experiment}")
-    except ImportError as e:
-        print(f"错误：找不到实验配置 '{args.experiment}'")
-        raise e
+        spec = load_experiment_spec(args.config)
+    except ValueError as e:
+        print(f"错误：{e}")
+        return
 
-    attention_class = exp_module.ATTENTION_CLASS
-    position_encoding_class = exp_module.POSITION_ENCODING_CLASS
-    mlp_class = getattr(exp_module, "MLP_CLASS", None)
-    norm_class = getattr(exp_module, "NORM_CLASS", None)
-    train_config = exp_module.TRAINING_CONFIG
+    attention_class = spec.attention_class
+    position_encoding_class = spec.position_encoding_class
+    mlp_class = spec.mlp_class
+    norm_class = spec.norm_class
+    train_config = spec.train_config
 
     _ensure_checkpoint_module_alias()
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
@@ -141,7 +142,7 @@ def main():
         else contextlib.nullcontext()
     )
 
-    print(f"实验: {args.experiment}")
+    print(f"实验: {spec.experiment_name}")
     print(f"checkpoint: {args.checkpoint}")
     print(f"设备: {device}")
     print(f"评估 batch_size: {batch_size}, val_steps: {args.val_steps}")

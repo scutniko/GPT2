@@ -3,13 +3,13 @@ set -euo pipefail
 
 # =====================================================
 # 模块化训练框架 - 夜间训练脚本
-# 支持所有实验：baseline, alibi, rope, sine, mqa, gqa, mla
+# 使用 YAML 实验配置（configs/experiments/*.yaml）
 # =====================================================
 
 # ------------------------------------------------
 # 配置区域 - 修改这里来切换实验
 # ------------------------------------------------
-EXPERIMENT="${EXPERIMENT:-mla}"  # 可通过环境变量覆盖，默认mla
+CONFIG_PATH="${CONFIG_PATH:-configs/experiments/mla.yaml}"  # 可通过环境变量覆盖
 LOG_SUBDIR="${LOG_SUBDIR:-}"
 DATASET_ROOT="${DATASET_ROOT:-}"
 
@@ -19,14 +19,21 @@ PROJECT_ROOT="${SCRIPT_DIR}"
 
 # 基于项目根目录构建路径
 TRAIN_FILE="${PROJECT_ROOT}/train.py"
-LOG_DIR="${PROJECT_ROOT}/log_train/${EXPERIMENT}/${LOG_SUBDIR}"
+if [[ "${CONFIG_PATH}" == /* || "${CONFIG_PATH}" =~ ^[A-Za-z]:[\\/].* ]]; then
+  CONFIG_FILE="${CONFIG_PATH}"
+else
+  CONFIG_FILE="${PROJECT_ROOT}/${CONFIG_PATH}"
+fi
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-$(basename "${CONFIG_FILE%.*}")}"
+LOG_DIR="${PROJECT_ROOT}/log_train/${EXPERIMENT_NAME}/${LOG_SUBDIR}"
 
 echo "=============================================="
 echo "[nightly] Modular Training Framework"
 echo "[nightly] $(date)"
 echo "=============================================="
 echo "[nightly] PROJECT_ROOT=${PROJECT_ROOT}"
-echo "[nightly] EXPERIMENT=${EXPERIMENT}"
+echo "[nightly] CONFIG_PATH=${CONFIG_FILE}"
+echo "[nightly] EXPERIMENT_NAME=${EXPERIMENT_NAME}"
 echo "[nightly] LOG_SUBDIR=${LOG_SUBDIR}"
 echo "[nightly] DATASET_ROOT=${DATASET_ROOT}"
 echo "[nightly] TRAIN_FILE=${TRAIN_FILE}"
@@ -38,6 +45,11 @@ echo "[nightly] LOG_DIR=${LOG_DIR}"
 if [[ ! -f "${TRAIN_FILE}" ]]; then
   echo "[nightly][ERROR] Training script not found: ${TRAIN_FILE}"
   echo "[nightly][ERROR] Please make sure you're in the correct directory"
+  exit 1
+fi
+
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+  echo "[nightly][ERROR] 配置文件不存在: ${CONFIG_FILE}"
   exit 1
 fi
 
@@ -91,7 +103,7 @@ TORCHRUN_ARGS=(
 )
 
 TRAIN_ARGS=(
-  --experiment "${EXPERIMENT}"
+  --config "${CONFIG_FILE}"
   --log_subdir "${LOG_SUBDIR}"
   --data_root "${DATASET_ROOT}"
 )

@@ -1,0 +1,13 @@
+base:
+  - ../base/model_124m.yaml
+  - ../base/train_default.yaml
+experiment_name: rope
+components:
+  attention: base
+  position_encoding: rope
+  mlp: default
+  norm: layernorm
+train:
+  warmup_steps: 50
+  max_steps: 1518
+

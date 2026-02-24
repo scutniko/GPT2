@@ -1,0 +1,11 @@
+train:
+  max_lr: 0.0006
+  min_lr: 0.00006
+  warmup_steps: 715
+  max_steps: 19073
+  weight_decay: 0.1
+  total_batch_size: 524288
+  micro_batch_size: 8
+  sequence_length: 1024
+  log_name: log.txt
+

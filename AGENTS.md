@@ -9,16 +9,17 @@
 - `core/` contains configuration, data loading, and training utilities.
 - `models/` defines the GPT model (`gpt.py`).
 - `modules/` contains attention blocks, MLP variants, normalization, and position encodings.
-- `experiments/` holds experiment configs (e.g., `baseline.py`, `rope.py`, `mqa.py`).
+- `configs/experiments/` holds YAML experiment configs (e.g., `baseline.yaml`, `rope.yaml`, `mqa.yaml`).
+- `configs/base/` holds shared base YAML configs for inheritance.
 - `hellaswag/` stores cached HellaSwag `.jsonl` datasets; `hellaswag.py` handles download/eval.
 - `train_nightly.sh` runs multi‑GPU training and auto‑resumes from the latest checkpoint.
 
 ## Build, Test, and Development Commands
 - Install deps: `python -m pip install -r requirements.txt`
-- Train (single process): `python train.py --experiment baseline`
-- Resume: `python train.py --experiment baseline --resume log_train/baseline/log/model_15000.pt`
-- Inference: `python train.py --experiment baseline --inference log_train/baseline/log/model_15000.pt`
-- Nightly multi‑GPU: `EXPERIMENT=mla bash train_nightly.sh`
+- Train (single process): `python train.py --config baseline`
+- Resume: `python train.py --config baseline --resume log_train/baseline/log/model_15000.pt`
+- Inference: `python train.py --config baseline --inference log_train/baseline/log/model_15000.pt`
+- Nightly multi‑GPU: `CONFIG_PATH=configs/experiments/mla.yaml bash train_nightly.sh`
 - HellaSwag eval: `python hellaswag.py --model_type gpt2 --device cuda`
 
 ## Coding Style & Naming Conventions

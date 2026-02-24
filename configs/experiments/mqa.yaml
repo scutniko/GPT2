@@ -1,0 +1,10 @@
+base:
+  - ../base/model_124m.yaml
+  - ../base/train_default.yaml
+experiment_name: mqa
+components:
+  attention: mqa
+  position_encoding: learned
+  mlp: default
+  norm: layernorm
+

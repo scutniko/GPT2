@@ -1,0 +1,10 @@
+base:
+  - ../base/model_124m.yaml
+  - ../base/train_default.yaml
+experiment_name: sine
+components:
+  attention: base
+  position_encoding: sine
+  mlp: default
+  norm: layernorm
+

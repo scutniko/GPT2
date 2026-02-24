@@ -22,8 +22,8 @@ if project_root not in sys.path:
 
 from models.gpt import GPT
 
+from core.experiment import load_experiment_spec
 from modules.position_encodings import LearnedPositionEncoding, SinusoidalPositionalEncoding, RoPE, ALiBi
-from core.config import GPTConfig
 
 def _ensure_checkpoint_module_alias():
     # Old checkpoints may reference the project root as "GPT2.*"
@@ -158,7 +158,7 @@ def _format_cache_shape(past_kv):
 
 def main():
     parser = argparse.ArgumentParser(description="KV cache 推理评估")
-    parser.add_argument("--experiment", type=str, required=True, help="实验名称")
+    parser.add_argument("--config", type=str, required=True, help="实验配置路径或名称（如 baseline）")
     parser.add_argument("--checkpoint", type=str, default=None, help="模型检查点路径（可选，默认自动找最新）")
     parser.add_argument("--log_subdir", type=str, default=None, help="日志与checkpoint子目录（位于 log_train/<experiment>/ 下）")
     parser.add_argument("--log_dir", type=str, default=None, help="日志与checkpoint目录（可选，优先级高于 log_subdir）")
@@ -173,18 +173,17 @@ def main():
     args = parser.parse_args()
 
     try:
-        exp_module = importlib.import_module(f"experiments.{args.experiment}")
-    except ImportError:
-        print(f"错误: 找不到实验配置 '{args.experiment}'")
+        spec = load_experiment_spec(args.config)
+    except ValueError as e:
+        print(f"错误: {e}")
         return
 
-    experiment_name = exp_module.EXPERIMENT_NAME
-    model_config = exp_module.MODEL_CONFIG
-    attention_class = exp_module.ATTENTION_CLASS
-    position_encoding_class = exp_module.POSITION_ENCODING_CLASS
-    mlp_class = getattr(exp_module, "MLP_CLASS", None)
-    norm_class = getattr(exp_module, "NORM_CLASS", None)
-    train_config = exp_module.TRAINING_CONFIG
+    experiment_name = spec.experiment_name
+    model_config = spec.model_config
+    attention_class = spec.attention_class
+    position_encoding_class = spec.position_encoding_class
+    mlp_class = spec.mlp_class
+    norm_class = spec.norm_class
 
     device = "cpu"
     if torch.cuda.is_available():

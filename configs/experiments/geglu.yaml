@@ -1,0 +1,10 @@
+base:
+  - ../base/model_124m.yaml
+  - ../base/train_default.yaml
+experiment_name: geglu
+components:
+  attention: base
+  position_encoding: learned
+  mlp: geglu
+  norm: layernorm
+

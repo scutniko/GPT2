@@ -1,0 +1,13 @@
+base:
+  - ../base/model_124m.yaml
+  - ../base/train_default.yaml
+experiment_name: mla
+components:
+  attention: mla
+  position_encoding: learned
+  mlp: default
+  norm: layernorm
+model:
+  kv_lora_rank: 192
+  q_lora_rank: 384
+
