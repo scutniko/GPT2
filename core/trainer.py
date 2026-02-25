@@ -30,6 +30,8 @@ def run_train_loop(
     log_dir,
     start_step,
     grad_accum_steps,
+    experiment_name=None,
+    config_ref=None,
     use_compile=False,
 ):
     """执行训练主循环。"""
@@ -49,66 +51,8 @@ def run_train_loop(
     for step in range(start_step, max_steps):
         t0 = time.time()
         last_step = step == (max_steps - 1)
-
-        if step % 250 == 0 or last_step:
-            val_loss_accum = evaluate_validation_loss(
-                model=model,
-                val_loader=val_loader,
-                device=device,
-                device_type=device_type,
-                val_loss_steps=20,
-            )
-            if ddp:
-                dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
-            if master_process:
-                print(f"validation loss: {val_loss_accum.item():.4f}")
-                with open(log_file, "a", encoding="utf-8") as f:
-                    f.write(f"{step} val {val_loss_accum.item():.4f}\n")
-                if step > 0 and (step % 250 == 0 or last_step):
-                    checkpoint_path = os.path.join(log_dir, f"model_{step:05d}.pt")
-                    save_checkpoint(
-                        path=checkpoint_path,
-                        raw_model=raw_model,
-                        optimizer=optimizer,
-                        train_loader=train_loader,
-                        step=step,
-                        val_loss=val_loss_accum.item(),
-                    )
-
-        if (step % 250 == 0 or last_step) and (not use_compile):
-            num_correct_norm, num_total = evaluate_hellaswag_local(
-                model=model,
-                device=device,
-                device_type=device_type,
-                ddp_rank=ddp_rank,
-                ddp_world_size=ddp_world_size,
-            )
-            if ddp:
-                num_total = torch.tensor(num_total, dtype=torch.long, device=device)
-                num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
-                dist.all_reduce(num_total, op=dist.ReduceOp.SUM)
-                dist.all_reduce(num_correct_norm, op=dist.ReduceOp.SUM)
-                num_total = num_total.item()
-                num_correct_norm = num_correct_norm.item()
-            acc_norm = num_correct_norm / num_total
-            if master_process:
-                print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}")
-                with open(log_file, "a", encoding="utf-8") as f:
-                    f.write(f"{step} hella {acc_norm:.4f}\n")
-
-        if ((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
-            samples = generate_samples_for_rank(
-                model=model,
-                enc=enc,
-                device=device,
-                device_type=device_type,
-                ddp_rank=ddp_rank,
-                num_return_sequences=4,
-                max_length=32,
-                prompt="Hello, I'm a language model,",
-            )
-            for i, decoded in samples:
-                print(f"rank {ddp_rank} sample {i}: {decoded}")
+        should_eval = step % 250 == 0 or last_step
+        should_sample = ((step > 0 and step % 250 == 0) or last_step) and (not use_compile)
 
         model.train()
         optimizer.zero_grad()
@@ -151,3 +95,66 @@ def run_train_loop(
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(f"{step} train {loss_accum.item():.6f}\n")
 
+        if should_eval:
+            model.eval()
+
+            val_loss_accum = evaluate_validation_loss(
+                model=model,
+                val_loader=val_loader,
+                device=device,
+                device_type=device_type,
+                val_loss_steps=20,
+            )
+            if ddp:
+                dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
+            if master_process:
+                print(f"validation loss: {val_loss_accum.item():.4f}")
+                with open(log_file, "a", encoding="utf-8") as f:
+                    f.write(f"{step} val {val_loss_accum.item():.4f}\n")
+                if step > 0:
+                    checkpoint_path = os.path.join(log_dir, f"model_{step:05d}.pt")
+                    save_checkpoint(
+                        path=checkpoint_path,
+                        raw_model=raw_model,
+                        optimizer=optimizer,
+                        train_loader=train_loader,
+                        step=step,
+                        val_loss=val_loss_accum.item(),
+                        experiment_name=experiment_name,
+                        config_ref=config_ref,
+                    )
+
+            if not use_compile:
+                num_correct_norm, num_total = evaluate_hellaswag_local(
+                    model=model,
+                    device=device,
+                    device_type=device_type,
+                    ddp_rank=ddp_rank,
+                    ddp_world_size=ddp_world_size,
+                )
+                if ddp:
+                    num_total = torch.tensor(num_total, dtype=torch.long, device=device)
+                    num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
+                    dist.all_reduce(num_total, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(num_correct_norm, op=dist.ReduceOp.SUM)
+                    num_total = num_total.item()
+                    num_correct_norm = num_correct_norm.item()
+                acc_norm = num_correct_norm / num_total
+                if master_process:
+                    print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}")
+                    with open(log_file, "a", encoding="utf-8") as f:
+                        f.write(f"{step} hella {acc_norm:.4f}\n")
+
+        if should_sample:
+            samples = generate_samples_for_rank(
+                model=model,
+                enc=enc,
+                device=device,
+                device_type=device_type,
+                ddp_rank=ddp_rank,
+                num_return_sequences=4,
+                max_length=32,
+                prompt="Hello, I'm a language model,",
+            )
+            for i, decoded in samples:
+                print(f"rank {ddp_rank} sample {i}: {decoded}")

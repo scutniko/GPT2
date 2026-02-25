@@ -7,9 +7,7 @@ import os
 import glob
 import time
 import argparse
-import importlib
 import sys
-import types
 
 import torch
 import torch.nn.functional as F
@@ -22,28 +20,9 @@ if project_root not in sys.path:
 
 from models.gpt import GPT
 
+from core.checkpoint import load_checkpoint_low_mem, validate_checkpoint_v2
 from core.experiment import load_experiment_spec
 from modules.position_encodings import LearnedPositionEncoding, SinusoidalPositionalEncoding, RoPE, ALiBi
-
-def _ensure_checkpoint_module_alias():
-    # Old checkpoints may reference the project root as "GPT2.*"
-    if "GPT2" in sys.modules:
-        return
-    pkg = types.ModuleType("GPT2")
-    sys.modules["GPT2"] = pkg
-    try:
-        sys.modules["GPT2.core"] = importlib.import_module("core")
-        sys.modules["GPT2.core.config"] = importlib.import_module("core.config")
-        sys.modules["GPT2.core.data_loader"] = importlib.import_module("core.data_loader")
-        sys.modules["GPT2.models"] = importlib.import_module("models")
-        sys.modules["GPT2.models.gpt"] = importlib.import_module("models.gpt")
-        sys.modules["GPT2.modules"] = importlib.import_module("modules")
-        sys.modules["GPT2.modules.position_encodings"] = importlib.import_module(
-            "modules.position_encodings"
-        )
-    except Exception:
-        # Best-effort alias; torch.load will raise if something is still missing.
-        pass
 
 def _sync_if_cuda(device):
     if str(device).startswith("cuda"):
@@ -216,8 +195,8 @@ def main():
 
     model = GPT(model_config, attention_class, position_encoding_class,
                 mlp_class=mlp_class, norm_class=norm_class)
-    _ensure_checkpoint_module_alias()
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    ckpt = load_checkpoint_low_mem(checkpoint_path, map_location=device)
+    validate_checkpoint_v2(ckpt, required_fields=("model",))
     missing, unexpected = model.load_state_dict(ckpt["model"], strict=False)
     if missing:
         print(f"提示: 缺失参数 {missing}")

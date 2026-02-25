@@ -86,7 +86,21 @@ echo "[nightly] Detected GPU_COUNT=${GPU_COUNT}"
 # 4. 找最新 checkpoint（如果存在）
 # ------------------------------------------------
 mkdir -p "${LOG_DIR}"
-latest_ckpt="$(ls -1t "${LOG_DIR}"/*.pt 2>/dev/null | head -n 1 || true)"
+latest_ckpt=""
+latest_step=-1
+for ckpt in "${LOG_DIR}"/model_*.pt; do
+  [[ -e "${ckpt}" ]] || continue
+  name="$(basename "${ckpt}")"
+  step="${name#model_}"
+  step="${step%.pt}"
+  if [[ "${step}" =~ ^[0-9]+$ ]]; then
+    step_num=$((10#${step}))
+    if (( step_num > latest_step )); then
+      latest_step=${step_num}
+      latest_ckpt="${ckpt}"
+    fi
+  fi
+done
 
 if [[ -n "${latest_ckpt}" ]]; then
   echo "[nightly] Found checkpoint: ${latest_ckpt}"
@@ -103,6 +117,7 @@ TORCHRUN_ARGS=(
 )
 
 TRAIN_ARGS=(
+  train
   --config "${CONFIG_FILE}"
   --log_subdir "${LOG_SUBDIR}"
   --data_root "${DATASET_ROOT}"

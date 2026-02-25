@@ -4,43 +4,26 @@ Evaluate a saved checkpoint on multiple sequence lengths.
 
 import argparse
 import contextlib
-import importlib
 import math
 import os
 import sys
-import types
 
 import torch
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.insert(0, current_dir)
+project_root = os.path.dirname(current_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
+from core.checkpoint import (
+    extract_config_from_checkpoint,
+    load_checkpoint_low_mem,
+    validate_checkpoint_v2,
+)
 from core.data_loader import DataLoaderLite
 from core.experiment import load_experiment_spec
 from models.gpt import GPT
 from modules.position_encodings import LearnedPositionEncoding, SinusoidalPositionalEncoding
-
-
-def _ensure_checkpoint_module_alias():
-    # Old checkpoints may reference the project root as "GPT2.*"
-    if "GPT2" in sys.modules:
-        return
-    pkg = types.ModuleType("GPT2")
-    sys.modules["GPT2"] = pkg
-    try:
-        sys.modules["GPT2.core"] = importlib.import_module("core")
-        sys.modules["GPT2.core.config"] = importlib.import_module("core.config")
-        sys.modules["GPT2.core.data_loader"] = importlib.import_module("core.data_loader")
-        sys.modules["GPT2.models"] = importlib.import_module("models")
-        sys.modules["GPT2.models.gpt"] = importlib.import_module("models.gpt")
-        sys.modules["GPT2.modules"] = importlib.import_module("modules")
-        sys.modules["GPT2.modules.position_encodings"] = importlib.import_module(
-            "modules.position_encodings"
-        )
-    except Exception:
-        # Best-effort alias; torch.load will raise if something is still missing.
-        pass
 
 
 def parse_lengths(s):
@@ -91,9 +74,9 @@ def main():
     norm_class = spec.norm_class
     train_config = spec.train_config
 
-    _ensure_checkpoint_module_alias()
-    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    config = ckpt["config"]
+    ckpt = load_checkpoint_low_mem(args.checkpoint, map_location="cpu")
+    validate_checkpoint_v2(ckpt, required_fields=("model", "config_dict"))
+    config = extract_config_from_checkpoint(ckpt)
 
     # Decide whether we can evaluate longer than training length
     drop_sine_buffer = False

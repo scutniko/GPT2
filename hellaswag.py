@@ -33,7 +33,6 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from transformers import GPT2LMHeadModel
 
 # -----------------------------------------------------------------------------
 DATA_CACHE_DIR = os.path.join(os.path.dirname(__file__), "hellaswag")
@@ -119,6 +118,7 @@ def iterate_examples(split):
 
 @torch.no_grad()
 def evaluate(model_type, device):
+    from transformers import GPT2LMHeadModel
 
     torch.set_float32_matmul_precision('high') # use tf32
     model = GPT2LMHeadModel.from_pretrained(model_type)
