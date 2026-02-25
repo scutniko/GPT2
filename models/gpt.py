@@ -179,8 +179,18 @@ class GPT(nn.Module):
                     past_len = first_cache.size(2)
                 elif first_cache.dim() == 3:
                     past_len = first_cache.size(1)
-        # 确保序列长度不超过最大序列长度
-        assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
+        total_len = past_len + T
+        if self.use_learned_pe and total_len > self.config.block_size:
+            raise ValueError(
+                "LearnedPositionEncoding 不支持超过 block_size 的上下文长度: "
+                f"past_len({past_len}) + T({T}) = {total_len} > block_size({self.config.block_size})"
+            )
+        if (not self.use_learned_pe) and (not (self.use_rope or self.use_alibi or self.use_sine_pe)):
+            if total_len > self.config.block_size:
+                raise ValueError(
+                    "当前位置编码实现不支持超过 block_size 的上下文长度: "
+                    f"past_len({past_len}) + T({T}) = {total_len} > block_size({self.config.block_size})"
+                )
         
         # Token embedding
         tok_emb = self.transformer.wte(idx)  # shape (B, T, n_embd)
@@ -237,7 +247,7 @@ class GPT(nn.Module):
         """
         aux_losses = []
         for block in self.transformer.h:
-            aux = getattr(block.mlp, "last_aux_loss", None)
+            aux = block.mlp.get_aux_loss() if hasattr(block.mlp, "get_aux_loss") else None
             if aux is not None:
                 aux_losses.append(aux)
         if not aux_losses:

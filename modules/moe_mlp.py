@@ -121,3 +121,6 @@ class MoEMLP(nn.Module):
             out.index_add_(0, token_idx, y_e * weights)
 
         return out.view(bsz, seq_len, dim)
+
+    def get_aux_loss(self):
+        return self.last_aux_loss

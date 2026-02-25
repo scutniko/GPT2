@@ -8,6 +8,39 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _build_attn_mask(attn_bias, past_len, query_len, key_len, ref_tensor):
+    """
+    构建注意力掩码。
+
+    - 无 cache：使用 SDPA 内置 is_causal=True 快路径
+    - 有 cache 且 query_len==1：无需额外因果掩码（没有同块“未来token”）
+    - 有 cache 且 query_len>1：显式构建带 past 偏移的因果掩码
+    """
+    if past_len == 0:
+        return attn_bias, True
+    if query_len <= 1:
+        return attn_bias, False
+
+    mask_dtype = attn_bias.dtype if attn_bias is not None else ref_tensor.dtype
+    q_pos = torch.arange(
+        past_len,
+        past_len + query_len,
+        device=ref_tensor.device,
+    )[:, None]
+    k_pos = torch.arange(key_len, device=ref_tensor.device)[None, :]
+    causal_mask = torch.zeros(
+        (query_len, key_len),
+        device=ref_tensor.device,
+        dtype=mask_dtype,
+    )
+    causal_mask.masked_fill_(k_pos > q_pos, torch.finfo(mask_dtype).min)
+    causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)
+
+    if attn_bias is None:
+        return causal_mask, False
+    return attn_bias.to(dtype=mask_dtype) + causal_mask, False
+
+
 class BaseAttention(nn.Module):
     """
     标准的多头自注意力机制（GPT-2 baseline）
@@ -75,8 +108,8 @@ class BaseAttention(nn.Module):
         # 使用flash attention计算注意力，得到[B, n_head, T, head_size]
         # is_causal=True表示是因果注意力，即只能看到前面的token，不能看到后面的token。
         # 返回的y的shape是[B, n_head, T, head_size]
-        use_causal = past_kv is None
-        y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias, is_causal=use_causal) # flash attention
+        attn_mask, use_causal = _build_attn_mask(attn_bias, past_len, T, k.size(2), q)
+        y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=use_causal) # flash attention
 
         # 将[B, n_head, T, head_size]转置回[B, T, C]，再拼接起来
         # 其中contiguous()是为了确保tensor在内存中是连续的，因为transpose会破坏连续性，所以需要重新排列内存，方便后续的计算。
@@ -171,8 +204,8 @@ class MQAAttention(nn.Module):
         # k: [B, 1, T, head_dim] -> 自动broadcast到 [B, n_head, T, head_dim]
         # v: [B, 1, T, head_dim] -> 自动broadcast到 [B, n_head, T, head_dim]
         # 返回的y的shape是[B, n_head, T, head_dim]
-        use_causal = past_kv is None
-        y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias, is_causal=use_causal) # flash attention
+        attn_mask, use_causal = _build_attn_mask(attn_bias, past_len, T, k.size(2), q)
+        y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=use_causal) # flash attention
 
         # 将[B, n_head, T, head_dim]转置回[B, T, C]，再拼接起来
         y = y.transpose(1, 2).contiguous().view(B, T, C)
@@ -274,8 +307,8 @@ class GQAAttention(nn.Module):
 
         # 使用 flash attention 计算注意力
         # [B, n_head, T, head_dim] -> [B, n_head, T, head_dim]
-        use_causal = past_kv is None
-        y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias, is_causal=use_causal)
+        attn_mask, use_causal = _build_attn_mask(attn_bias, past_len, T, k.size(2), q)
+        y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=use_causal)
 
         # 将多头输出拼接回原始维度
         # [B, n_head, T, head_dim] -> [B, T, n_head, head_dim] -> [B, T, C]
@@ -337,8 +370,25 @@ class MLAAttention(nn.Module):
     def forward(self, x, past_kv=None, use_cache=False):
         # 输入x的shape是[B, T, C]，最终输出y的shape是[B, T, C]
         B, T, C = x.size()
-        past_latent = past_kv[0] if past_kv is not None else None
-        past_len = past_latent.size(1) if past_latent is not None else 0
+        past_k = None
+        past_v = None
+        if past_kv is not None:
+            if not isinstance(past_kv, (tuple, list)) or len(past_kv) != 2:
+                raise ValueError("MLA past_kv 必须是 (k, v) 二元组")
+            past_k, past_v = past_kv
+            if past_k.dim() != 4 or past_v.dim() != 4:
+                raise ValueError("MLA cache 的 k/v 维度必须是 [B, n_head, T, head_dim]")
+            if past_k.size(0) != B or past_v.size(0) != B:
+                raise ValueError("MLA cache 的 batch size 与当前输入不匹配")
+            if past_k.size(1) != self.n_head or past_v.size(1) != self.n_head:
+                raise ValueError("MLA cache 的 n_head 与当前配置不匹配")
+            if past_k.size(3) != self.head_dim or past_v.size(3) != self.head_dim:
+                raise ValueError("MLA cache 的 head_dim 与当前配置不匹配")
+            if past_k.size(2) != past_v.size(2):
+                raise ValueError("MLA cache 的 k/v 序列长度不一致")
+            past_len = past_k.size(2)
+        else:
+            past_len = 0
         
         # === MLA 前向传播 ===
         
@@ -350,14 +400,10 @@ class MLAAttention(nn.Module):
         kv_latent = latent[:, :, :self.kv_lora_rank]  # [B, T, kv_lora_rank]
         q_latent = latent[:, :, self.kv_lora_rank:]   # [B, T, q_lora_rank]
         
-        # 拼接latent cache（只缓存KV latent）
-        if past_latent is not None:
-            kv_latent = torch.cat((past_latent, kv_latent), dim=1)
-        
-        # 步骤2: 从潜在空间解压 KV（仅用于当前attention计算）
-        # [B, T_total, kv_lora_rank] -> [B, T_total, 2 * C]
+        # 步骤2: 从潜在空间解压 KV（仅对当前 chunk 计算）
+        # [B, T, kv_lora_rank] -> [B, T, 2 * C]
         kv = self.kv_up_proj(kv_latent)
-        k, v = kv.split(self.n_embd, dim=2)  # 分离 K 和 V，各为 [B, T_total, C]
+        k_new, v_new = kv.split(self.n_embd, dim=2)  # 各为 [B, T, C]
         
         # 步骤3: 从潜在空间解压 Q
         # [B, T, q_lora_rank] -> [B, T, C]
@@ -365,32 +411,22 @@ class MLAAttention(nn.Module):
         
         # 步骤4: 重塑为多头格式
         # Q: [B, T, C] -> [B, n_head, T, head_dim]
-        # K/V: [B, T_total, C] -> [B, n_head, T_total, head_dim]
+        # K/V(new): [B, T, C] -> [B, n_head, T, head_dim]
         q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
-        total_len = kv_latent.size(1)
-        k = k.view(B, total_len, self.n_head, self.head_dim).transpose(1, 2)
-        v = v.view(B, total_len, self.n_head, self.head_dim).transpose(1, 2)
+        k_new = k_new.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        v_new = v_new.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         
         # 应用 RoPE（如果有）
         if self.rope is not None:
-            def _apply_rope_segment(x, start_pos):
-                seq_len = x.size(2)
-                end_pos = start_pos + seq_len
-                if end_pos > self.rope.cos_cached.shape[2]:
-                    self.rope._init_cache(end_pos)
-                cos = self.rope.cos_cached[:, :, start_pos:end_pos, :]
-                sin = self.rope.sin_cached[:, :, start_pos:end_pos, :]
-                return self.rope.apply_rotary_emb(x, cos, sin)
-            
-            if past_len == 0:
-                q, k = self.rope(q, k, start_pos=0)
-            else:
-                q = _apply_rope_segment(q, start_pos=past_len)
-                k_past = k[:, :, :past_len, :]
-                k_curr = k[:, :, past_len:, :]
-                k_past = _apply_rope_segment(k_past, start_pos=0)
-                k_curr = _apply_rope_segment(k_curr, start_pos=past_len)
-                k = torch.cat((k_past, k_curr), dim=2)
+            q, k_new = self.rope(q, k_new, start_pos=past_len)
+
+        # 拼接 KV cache（缓存已是投影后的 k/v，避免历史反复解压）
+        if past_k is not None:
+            k = torch.cat((past_k, k_new), dim=2)
+            v = torch.cat((past_v, v_new), dim=2)
+        else:
+            k = k_new
+            v = v_new
         
         # 应用 ALiBi（如果有）
         attn_bias = None
@@ -399,8 +435,8 @@ class MLAAttention(nn.Module):
         
         # 步骤5: 标准的多头注意力计算
         # [B, n_head, T, head_dim] -> [B, n_head, T, head_dim]
-        use_causal = past_kv is None
-        y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias, is_causal=use_causal)
+        attn_mask, use_causal = _build_attn_mask(attn_bias, past_len, T, k.size(2), q)
+        y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=use_causal)
         
         # 步骤6: 合并多头输出
         # [B, n_head, T, head_dim] -> [B, T, C]
@@ -409,7 +445,7 @@ class MLAAttention(nn.Module):
         # 步骤7: 输出投影
         y = self.c_proj(y)
         if use_cache:
-            present_kv = (kv_latent,)
+            present_kv = (k, v)
             return y, present_kv
         return y
 

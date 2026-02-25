@@ -124,6 +124,10 @@ class RoPE(nn.Module):
     
     def __init__(self, dim, max_seq_len=2048, base=10000):
         super().__init__()
+        if dim <= 0:
+            raise ValueError(f"RoPE dim 必须 > 0，实际为 {dim}")
+        if dim % 2 != 0:
+            raise ValueError(f"RoPE dim 必须是偶数，实际为 {dim}")
         self.dim = dim
         self.max_seq_len = max_seq_len
         self.base = base
@@ -183,6 +187,19 @@ class RoPE(nn.Module):
         Returns:
             rotated_x: 应用旋转后的tensor
         """
+        if cos.shape != sin.shape:
+            raise ValueError(f"cos/sin shape 不一致: cos={cos.shape}, sin={sin.shape}")
+        if x.size(-1) % 2 != 0:
+            raise ValueError(f"RoPE 输入最后一维必须是偶数，实际为 {x.size(-1)}")
+        if x.size(-1) != cos.size(-1):
+            raise ValueError(
+                f"RoPE 输入维度与缓存维度不一致: x_last_dim={x.size(-1)}, cos_last_dim={cos.size(-1)}"
+            )
+        if x.size(-2) != cos.size(-2):
+            raise ValueError(
+                f"RoPE 序列长度不一致: x_seq={x.size(-2)}, cos_seq={cos.size(-2)}"
+            )
+
         # 将x分成两半
         x1 = x[..., : x.shape[-1] // 2]  # 前半部分
         x2 = x[..., x.shape[-1] // 2 :]  # 后半部分

@@ -36,6 +36,40 @@ def run_inference(
     sample_rng = torch.Generator(device=device)
     sample_rng.manual_seed(seed)
 
+    block_size = getattr(getattr(model, "config", None), "block_size", None)
+    use_learned_pe = bool(getattr(model, "use_learned_pe", False))
+    support_long_context = bool(
+        getattr(model, "use_rope", False)
+        or getattr(model, "use_alibi", False)
+        or getattr(model, "use_sine_pe", False)
+    )
+    prompt_len = xgen.size(1)
+
+    if max_length < prompt_len:
+        raise ValueError(
+            f"max_length({max_length}) 不能小于提示词长度({prompt_len})"
+        )
+    if block_size is not None and use_learned_pe and prompt_len > block_size:
+        raise ValueError(
+            f"LearnedPositionEncoding 不支持提示词超长: prompt_len({prompt_len}) > block_size({block_size})"
+        )
+    if block_size is not None and max_length > block_size:
+        if use_learned_pe:
+            raise ValueError(
+                "LearnedPositionEncoding 不支持超过 block_size 的生成长度: "
+                f"max_length({max_length}) > block_size({block_size})"
+            )
+        if not support_long_context:
+            raise ValueError(
+                "当前模型不支持超过 block_size 的生成长度: "
+                f"max_length({max_length}) > block_size({block_size})"
+            )
+        if master_process:
+            print(
+                "提示: 当前将执行长上下文推理，"
+                f"max_length={max_length}, block_size={block_size}"
+            )
+
     if master_process:
         print(f"\n{'='*60}")
         print(f"提示词: {prompt}")

@@ -46,6 +46,9 @@ class MLP(nn.Module):
         x = self.c_proj(x)
         return x
 
+    def get_aux_loss(self):
+        return None
+
 
 class ReLUMLP(nn.Module):
     """
@@ -74,6 +77,9 @@ class ReLUMLP(nn.Module):
         x = self.c_proj(x)
         return x
 
+    def get_aux_loss(self):
+        return None
+
 
 class SiLUMLP(nn.Module):
     """
@@ -101,6 +107,9 @@ class SiLUMLP(nn.Module):
         x = self.silu(x)
         x = self.c_proj(x)
         return x
+
+    def get_aux_loss(self):
+        return None
 
 
 class SwiGLUMLP(nn.Module):
@@ -147,6 +156,9 @@ class SwiGLUMLP(nn.Module):
         x = self.w_down(x)              # [B, T, C]
         return x
 
+    def get_aux_loss(self):
+        return None
+
 
 class GeGLUMLP(nn.Module):
     """
@@ -189,3 +201,6 @@ class GeGLUMLP(nn.Module):
         x = gate * up                       # 逐元素乘法，实现门控
         x = self.w_down(x)                  # [B, T, C]
         return x
+
+    def get_aux_loss(self):
+        return None
