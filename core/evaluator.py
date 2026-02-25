@@ -5,8 +5,8 @@
 import torch
 import torch.nn.functional as F
 
+from benchmarks.hellaswag import iterate_examples, render_example
 from core.training_utils import get_most_likely_row
-from hellaswag import iterate_examples, render_example
 
 
 def run_inference(

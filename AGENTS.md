@@ -6,7 +6,8 @@
 - `models/gpt.py`：GPT 主模型定义；`modules/`：attention / position / mlp / norm 可插拔组件。
 - `configs/base/`：可复用基础配置；`configs/experiments/`：实验配置（如 `baseline.yaml`、`rope.yaml`、`mqa.yaml`）。
 - `scripts/`：预处理、多长度评估、KV cache 评估、checkpoint 迁移工具。
-- `hellaswag/` 与 `hellaswag.py`：HellaSwag 数据缓存与评估脚本。
+- `benchmarks/hellaswag/`：HellaSwag 任务实现（数据下载、样本渲染、评估逻辑）。
+- `hellaswag/`：HellaSwag 缓存数据目录（`.jsonl`）。
 
 ## 构建、测试与开发命令
 - 安装依赖：`python -m pip install -r requirements.txt`
@@ -25,7 +26,7 @@
 ## 测试指南
 - 仓库当前无独立测试套件；核心改动后至少执行一次短程 `train` + `infer`。
 - 可选回归检查：`python scripts/kv_cache_eval.py --config baseline --checkpoint <ckpt> --max_length 64 --num_return_sequences 1`
-- 质量趋势可用：`python hellaswag.py --model_type gpt2 --device cuda`
+- 质量趋势可用：`python scripts/eval_hellaswag.py --model_type gpt2 --device cuda`
 - 若新增测试，请放在 `tests/` 下并使用 `test_*.py` 命名。
 
 ## 提交与 PR 规范

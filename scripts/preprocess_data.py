@@ -61,6 +61,16 @@ def _save_shard(output_dir, prefix, split, shard_idx, tokens):
     path = os.path.join(output_dir, filename)
     arr = np.array(tokens, dtype=np.int32)
     np.save(path, arr)
+    return int(arr.shape[0])
+
+
+def _update_shard_stats(stats, split, token_count):
+    split_stats = stats[split]
+    split_stats["count"] += 1
+    if split_stats["min_tokens"] is None or token_count < split_stats["min_tokens"]:
+        split_stats["min_tokens"] = token_count
+    if split_stats["max_tokens"] is None or token_count > split_stats["max_tokens"]:
+        split_stats["max_tokens"] = token_count
 
 
 def main():
@@ -79,10 +89,20 @@ def main():
     parser.add_argument("--shard_tokens", type=int, default=50_000_000, help="每个 shard 的 token 数")
     parser.add_argument("--min_chars", type=int, default=1, help="最小字符长度")
     parser.add_argument("--max_chars", type=int, default=0, help="最大字符长度，0 表示不截断")
+    parser.add_argument(
+        "--min_tail_tokens",
+        type=int,
+        default=1024,
+        help="尾 shard 的最小 token 阈值；低于该值则丢弃（默认 1024）",
+    )
     parser.add_argument("--add_eot", action="store_true", help="在每条样本末尾追加 EOT")
     parser.add_argument("--streaming", action="store_true", help="使用 streaming 读取（省内存）")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     args = parser.parse_args()
+    if args.shard_tokens <= 0:
+        parser.error("--shard_tokens 必须 > 0")
+    if args.min_tail_tokens < 0:
+        parser.error("--min_tail_tokens 不能为负数")
 
     os.makedirs(args.output_dir, exist_ok=True)
     rng = random.Random(args.seed)
@@ -108,6 +128,12 @@ def main():
     num_train_tokens = 0
     num_val_tokens = 0
     num_test_tokens = 0
+    dropped_tail_tokens = {"train": 0, "val": 0, "test": 0}
+    shard_stats = {
+        "train": {"count": 0, "min_tokens": None, "max_tokens": None},
+        "val": {"count": 0, "min_tokens": None, "max_tokens": None},
+        "test": {"count": 0, "min_tokens": None, "max_tokens": None},
+    }
 
     total = None if args.streaming else len(dataset)
     pbar = tqdm(dataset, total=total, desc="处理样本")
@@ -150,21 +176,42 @@ def main():
             test_buf.extend(tokens)
             num_test_tokens += len(tokens)
             while len(test_buf) >= args.shard_tokens:
-                _save_shard(args.output_dir, args.prefix, "test", test_shard_idx, test_buf[:args.shard_tokens])
+                token_count = _save_shard(
+                    args.output_dir,
+                    args.prefix,
+                    "test",
+                    test_shard_idx,
+                    test_buf[:args.shard_tokens],
+                )
+                _update_shard_stats(shard_stats, "test", token_count)
                 del test_buf[:args.shard_tokens]
                 test_shard_idx += 1
         elif send_to_val:
             val_buf.extend(tokens)
             num_val_tokens += len(tokens)
             while len(val_buf) >= args.shard_tokens:
-                _save_shard(args.output_dir, args.prefix, "val", val_shard_idx, val_buf[:args.shard_tokens])
+                token_count = _save_shard(
+                    args.output_dir,
+                    args.prefix,
+                    "val",
+                    val_shard_idx,
+                    val_buf[:args.shard_tokens],
+                )
+                _update_shard_stats(shard_stats, "val", token_count)
                 del val_buf[:args.shard_tokens]
                 val_shard_idx += 1
         else:
             train_buf.extend(tokens)
             num_train_tokens += len(tokens)
             while len(train_buf) >= args.shard_tokens:
-                _save_shard(args.output_dir, args.prefix, "train", train_shard_idx, train_buf[:args.shard_tokens])
+                token_count = _save_shard(
+                    args.output_dir,
+                    args.prefix,
+                    "train",
+                    train_shard_idx,
+                    train_buf[:args.shard_tokens],
+                )
+                _update_shard_stats(shard_stats, "train", token_count)
                 del train_buf[:args.shard_tokens]
                 train_shard_idx += 1
 
@@ -177,15 +224,19 @@ def main():
                 "skipped": num_skipped,
             })
 
-    if train_buf:
-        _save_shard(args.output_dir, args.prefix, "train", train_shard_idx, train_buf)
-        train_shard_idx += 1
-    if val_buf:
-        _save_shard(args.output_dir, args.prefix, "val", val_shard_idx, val_buf)
-        val_shard_idx += 1
-    if test_buf:
-        _save_shard(args.output_dir, args.prefix, "test", test_shard_idx, test_buf)
-        test_shard_idx += 1
+    def _flush_tail(split, buf, shard_idx):
+        if not buf:
+            return shard_idx
+        if len(buf) < args.min_tail_tokens:
+            dropped_tail_tokens[split] = len(buf)
+            return shard_idx
+        token_count = _save_shard(args.output_dir, args.prefix, split, shard_idx, buf)
+        _update_shard_stats(shard_stats, split, token_count)
+        return shard_idx + 1
+
+    train_shard_idx = _flush_tail("train", train_buf, train_shard_idx)
+    val_shard_idx = _flush_tail("val", val_buf, val_shard_idx)
+    test_shard_idx = _flush_tail("test", test_buf, test_shard_idx)
 
     print("预处理完成")
     print(f"总样本数: {num_docs}")
@@ -196,6 +247,19 @@ def main():
     print(f"训练 shards: {train_shard_idx}")
     print(f"验证 shards: {val_shard_idx}")
     print(f"测试 shards: {test_shard_idx}")
+    print(f"尾 shard 最小阈值(min_tail_tokens): {args.min_tail_tokens}")
+    for split in ("train", "val", "test"):
+        stats = shard_stats[split]
+        if stats["count"] > 0:
+            print(
+                f"{split} shard tokens: min={stats['min_tokens']}, "
+                f"max={stats['max_tokens']}, count={stats['count']}"
+            )
+        else:
+            print(f"{split} shard tokens: count=0")
+    for split in ("train", "val", "test"):
+        if dropped_tail_tokens[split] > 0:
+            print(f"{split} 尾 shard 被丢弃: tokens={dropped_tail_tokens[split]}")
     print(f"输出目录: {args.output_dir}")
 
 

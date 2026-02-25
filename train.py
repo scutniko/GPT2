@@ -25,7 +25,7 @@ from core.checkpoint import (
     validate_checkpoint_v2,
 )
 from core.cli import parse_args
-from core.data_loader import DataLoaderLite
+from core.data_loader import DataLoaderLite, validate_shard_lengths
 from core.evaluator import run_inference
 from core.experiment import load_experiment_spec
 from core.runtime import cleanup_runtime, set_seed, setup_runtime
@@ -89,6 +89,27 @@ def run_train_mode(args):
         if runtime_ctx.master_process:
             print(f"总batch size: {total_batch_size}")
             print(f"=> 梯度累积步数: {grad_accum_steps}")
+
+        min_tokens_required = B * T * runtime_ctx.ddp_world_size + 1
+        train_shard_stats = validate_shard_lengths(
+            data_root=args.data_root,
+            split="train",
+            min_tokens_required=min_tokens_required,
+        )
+        val_shard_stats = validate_shard_lengths(
+            data_root=args.data_root,
+            split="val",
+            min_tokens_required=min_tokens_required,
+        )
+        if runtime_ctx.master_process:
+            print(
+                "shard长度检查通过: "
+                f"required_tokens>={min_tokens_required}; "
+                f"train(num={train_shard_stats['num_shards']}, "
+                f"min={train_shard_stats['min_tokens']}, max={train_shard_stats['max_tokens']}), "
+                f"val(num={val_shard_stats['num_shards']}, "
+                f"min={val_shard_stats['min_tokens']}, max={val_shard_stats['max_tokens']})"
+            )
 
         train_loader = DataLoaderLite(
             B=B,

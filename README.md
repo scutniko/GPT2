@@ -1,34 +1,32 @@
-# GPT2 训练框架（模块化实验版）
+# GPT-2 模块化训练框架（完整使用指南）
 
 本仓库是一个面向 GPT 类语言模型实验的训练框架，支持：
 
-- 多种注意力机制：`base / mqa / gqa / mla`
-- 多种位置编码：`learned / alibi / rope / sine`
-- 多种 MLP：`mlp / relu / silu / swiglu / geglu / moe`
-- 多种归一化：`layernorm / rmsnorm`
-- YAML 继承式实验配置（`base + experiments`）
-- 单卡训练、DDP 多卡训练、断点恢复、推理与评估
+- 可插拔组件：Attention（`base/mqa/gqa/mla`）、位置编码（`learned/alibi/rope/sine`）、MLP（`mlp/relu/silu/swiglu/geglu/moe`）、Norm（`layernorm/rmsnorm`）
+- YAML 继承式实验配置（`configs/base` + `configs/experiments`）
+- 单机单卡、`torchrun` 多卡 DDP、断点恢复、权重初始化训练
+- 内置验证 loss、HellaSwag 评估、样本生成、KV cache 与多长度评估工具
 
-## 1. 目录结构
+---
+
+## 1. 项目结构
 
 ```text
 .
-├─ train.py                      # 统一入口（train/infer）
+├─ train.py                      # 统一入口：train / infer
 ├─ train_nightly.sh              # 夜间多卡训练脚本（自动续训）
-├─ core/                         # 运行时、配置、数据、训练循环、checkpoint
-├─ models/gpt.py                 # GPT 主模型（可插拔组件）
+├─ core/                         # CLI/配置/运行时/数据加载/训练循环/checkpoint
+├─ models/gpt.py                 # GPT 主模型（组件可插拔）
 ├─ modules/                      # attention/mlp/norm/position 实现
 ├─ configs/
-│  ├─ base/                      # 基础配置
+│  ├─ base/                      # 公共配置
 │  └─ experiments/               # 实验配置
-├─ scripts/
-│  ├─ preprocess_data.py         # 语料预处理为 .npy shard
-│  ├─ eval_lengths.py            # 多长度验证评估
-│  ├─ kv_cache_eval.py           # KV cache 速度/一致性评估
-│  └─ migrate_checkpoints.py     # 老 checkpoint 迁移到 v2
-├─ hellaswag.py                  # HellaSwag 下载与评估工具
-└─ plot_training_log.py          # 解析训练 stdout 日志并绘图
+├─ benchmarks/hellaswag/         # HellaSwag 数据与评估逻辑
+├─ scripts/                      # 预处理、评估、迁移、绘图脚本
+└─ hellaswag/                    # HellaSwag 缓存目录（jsonl）
 ```
+
+---
 
 ## 2. 环境安装
 
@@ -36,25 +34,17 @@
 python -m pip install -r requirements.txt
 ```
 
-依赖见 `requirements.txt`，核心包含：
+核心依赖：`torch`, `tiktoken`, `datasets`, `transformers`, `PyYAML`。
 
-- `torch>=2.0.0`
-- `tiktoken`
-- `datasets`
-- `transformers`
-- `PyYAML`
+---
 
-## 3. 快速开始
+## 3. 快速开始（从原始语料到训练/推理）
 
-### 3.1 准备离线 token 数据（.npy shard）
-
-训练数据加载器要求 `--data_root` 目录下存在文件名包含 `train` 和 `val` 的 shard 文件（例如 `dataset_train_000000.npy`、`dataset_val_000000.npy`）。
-
-推荐先用预处理脚本生成：
+### 3.1 预处理原始语料为 `.npy` shards
 
 ```bash
 python scripts/preprocess_data.py \
-  --input /path/to/raw_corpus \
+  --input /path/to/raw_data \
   --format auto \
   --output_dir /path/to/shards \
   --prefix dataset \
@@ -63,6 +53,10 @@ python scripts/preprocess_data.py \
   --shard_tokens 50000000 \
   --add_eot
 ```
+
+要点：
+- 训练加载器通过文件名包含 `train` / `val` 识别切分（例如 `dataset_train_000000.npy`）。
+- 每个 shard 必须至少满足：`B * T * world_size + 1` 个 token（训练启动会 fail-fast 检查）。
 
 ### 3.2 单进程训练
 
@@ -73,19 +67,17 @@ python train.py train \
   --log_subdir log
 ```
 
-### 3.3 从 checkpoint 恢复训练
+### 3.3 恢复训练 / 仅加载权重
 
 ```bash
+# 恢复 step + optimizer + loader state
 python train.py train \
   --config baseline \
   --data_root /path/to/shards \
   --log_subdir log \
   --resume log_train/baseline/log/model_15000.pt
-```
 
-### 3.4 仅加载权重初始化训练（不恢复 step/优化器）
-
-```bash
+# 仅加载模型权重（step 从 0 开始）
 python train.py train \
   --config baseline \
   --data_root /path/to/shards \
@@ -93,18 +85,9 @@ python train.py train \
   --init_from log_train/baseline/log/model_15000.pt
 ```
 
-注意：`--resume` 与 `--init_from` 互斥。
+`--resume` 与 `--init_from` 互斥。
 
-### 3.5 推理
-
-最简推理：
-
-```bash
-python train.py infer \
-  --checkpoint log_train/baseline/log/model_15000.pt
-```
-
-带采样参数：
+### 3.4 推理
 
 ```bash
 python train.py infer \
@@ -117,56 +100,40 @@ python train.py infer \
   --seed 42
 ```
 
-当 checkpoint 中没有 `config_ref/experiment_name` 时，需手动指定：
+若 checkpoint 中没有 `config_ref/experiment_name`，需显式加 `--config baseline`。
 
-```bash
-python train.py infer \
-  --checkpoint log_train/baseline/log/model_15000.pt \
-  --config baseline
-```
+---
 
-## 4. 多卡与夜间训练
+## 4. `train.py` 完整参数
 
-### 4.1 手动 torchrun
+### 4.1 `train` 子命令
 
-```bash
-torchrun --standalone --nproc_per_node=8 train.py train \
-  --config baseline \
-  --data_root /path/to/shards \
-  --log_subdir log
-```
+- `--config`：实验配置短名或路径（必填）
+- `--data_root`：离线 token shard 目录（必填）
+- `--log_subdir`：日志子目录（必填）
+- `--resume`：从 checkpoint 恢复训练
+- `--init_from`：仅加载权重初始化
 
-### 4.2 `train_nightly.sh`（自动探测 GPU + 自动续训）
+### 4.2 `infer` 子命令
 
-```bash
-CONFIG_PATH=configs/experiments/mla.yaml \
-LOG_SUBDIR=log \
-DATASET_ROOT=/path/to/shards \
-bash train_nightly.sh
-```
+- `--checkpoint`（必填）
+- `--config`（可选，无法从 checkpoint 推断时必填）
+- `--prompt`（默认 `"Hello, I'm a language model,"`）
+- `--max_length`（默认 `32`）
+- `--num_return_sequences`（默认 `5`）
+- `--top_k`（默认 `50`）
+- `--temperature`（默认 `1.0`，必须 > 0）
+- `--seed`（默认 `42`）
 
-脚本行为：
+---
 
-- 自动检测 GPU 数（`nvidia-smi -L`）
-- 自动在 `log_train/<EXPERIMENT_NAME>/<LOG_SUBDIR>/` 下查找最新 `model_*.pt`
-- 找到则自动追加 `--resume`，否则从头训练
+## 5. 配置系统（YAML 继承）
 
-环境变量说明：
-
-- `CONFIG_PATH`：实验配置路径（默认 `configs/experiments/mla.yaml`）
-- `LOG_SUBDIR`：日志子目录（必填）
-- `DATASET_ROOT`：token shard 根目录（必填）
-- `EXPERIMENT_NAME`：日志目录实验名（可选，默认取配置文件名）
-- `INIT_FROM`：只加载权重（设置后不会自动 `--resume`）
-
-## 5. 配置系统（YAML）
-
-### 5.1 配置解析规则
+### 5.1 解析规则
 
 - 支持短名：`baseline`
-- 支持相对路径/绝对路径：`configs/experiments/baseline.yaml`
-- 支持 `base` 继承（单个字符串或列表）
-- 深度合并：子配置覆盖父配置同名字段
+- 支持路径：`configs/experiments/baseline.yaml`（相对/绝对均可）
+- 支持 `base:` 单个或列表继承，采用深度合并
 
 ### 5.2 实验配置必填字段
 
@@ -175,134 +142,210 @@ bash train_nightly.sh
 - `components`
 - `train`
 
-`train` 至少包含：
-
-- `max_lr`
-- `min_lr`
-- `warmup_steps`
-- `max_steps`
-- `weight_decay`
-- `total_batch_size`
-- `micro_batch_size`
-- `sequence_length`
+`train` 必填键：
+`max_lr`, `min_lr`, `warmup_steps`, `max_steps`, `weight_decay`, `total_batch_size`, `micro_batch_size`, `sequence_length`
 
 ### 5.3 组件注册键
 
-| 类型 | 可选值 |
-|---|---|
-| `components.attention` | `base`, `mqa`, `gqa`, `mla` |
-| `components.position_encoding` | `learned`, `alibi`, `rope`, `sine`, `sinusoidal` |
-| `components.mlp` | `default`, `mlp`, `relu`, `silu`, `swiglu`, `geglu`, `moe` |
-| `components.norm` | `default`, `layernorm`, `rmsnorm` |
+- `components.attention`: `base`, `mqa`, `gqa`, `mla`
+- `components.position_encoding`: `learned`, `alibi`, `rope`, `sine`, `sinusoidal`
+- `components.mlp`: `default`, `mlp`, `relu`, `silu`, `swiglu`, `geglu`, `moe`
+- `components.norm`: `default`, `layernorm`, `rmsnorm`
 
-### 5.4 当前内置实验
+### 5.4 常见模型扩展字段（写在 `model:`）
 
-`baseline`, `alibi`, `rope`, `sine`, `mqa`, `gqa`, `mla`, `relu`, `silu`, `swiglu`, `geglu`, `rmsnorm`, `moe`
+- GQA: `n_kv_head`
+- MLA: `kv_lora_rank`, `q_lora_rank`
+- MoE: `n_experts`, `moe_top_k`, `moe_capacity_factor`, `moe_router_noise`, `moe_expert_type`
+- 初始化：`init_method`（`default/xavier/kaiming`）、`init_distribution`（`normal/uniform`）
 
-## 6. 训练与日志行为说明
+MoE 训练可额外设置 `train.moe_aux_weight`。
 
-- 每个 step 打印训练信息：`loss/lr/grad_norm/dt/tok_sec`
-- 每 250 步（及最后一步）做验证集 loss 评估
-- 每 250 步（及最后一步）做 HellaSwag 评估与样本生成（`torch.compile=False` 时）
-- checkpoint 默认保存到 `log_train/<experiment_name>/<log_subdir>/model_<step>.pt`
-- 非恢复训练会清空当前 `log_file`
-- 恢复训练会尝试恢复：
-  - 模型参数
-  - 优化器状态
-  - 数据加载位置（`train_loader_state`）
+---
 
-`log_file`（默认 `log.txt`）写入格式为：
+## 6. 训练行为说明
 
-- `<step> train <loss>`
-- `<step> val <loss>`
-- `<step> hella <acc>`
+- 梯度累积步数：
+  `grad_accum_steps = total_batch_size / (micro_batch_size * sequence_length * world_size)`
+- 学习率：warmup + cosine decay（见 `core/training_utils.py`）
+- 每 `250` step（及最后一步）执行：
+  - 验证集 loss（20 个 batch）
+  - HellaSwag 评估（训练时本地实现）
+  - 保存 checkpoint（step>0）
+- 每 `250` step（及最后一步，且 `torch.compile=False`）采样输出文本
 
-## 7. Checkpoint 规范
+输出目录：
 
-当前主训练/推理代码只支持 `schema_version=2` 的 checkpoint。
-
-主要字段：
-
-- `schema_version`
-- `model`
-- `config_dict`
-- `step`
-- `optimizer`
-- `train_loader_state`
-- 可选：`experiment_name`, `config_ref`
-
-旧文件可使用迁移脚本转换：
-
-```bash
-python scripts/migrate_checkpoints.py \
-  --input /path/to/checkpoints \
-  --pattern "model_*.pt" \
-  --backup
+```text
+log_train/<experiment_name>/<log_subdir>/
+├─ log.txt
+└─ model_XXXXX.pt
 ```
 
-## 8. 评估与辅助脚本
+`log.txt` 行格式：`<step> train|val|hella <value>`。
 
-### 8.1 HellaSwag（独立脚本）
+---
+
+## 7. 多卡训练
+
+### 7.1 手动 `torchrun`
 
 ```bash
-python hellaswag.py --model_type gpt2 --device cuda
+torchrun --standalone --nproc_per_node=8 train.py train \
+  --config baseline \
+  --data_root /path/to/shards \
+  --log_subdir log
 ```
 
-### 8.2 多长度验证评估
+说明：DDP backend 固定为 `nccl`，需要 CUDA。
+
+### 7.2 夜间脚本 `train_nightly.sh`
+
+```bash
+CONFIG_PATH=configs/experiments/mla.yaml \
+LOG_SUBDIR=log \
+DATASET_ROOT=/path/to/shards \
+bash train_nightly.sh
+```
+
+行为：
+- 自动检测 GPU 数
+- 自动查找 `log_train/<experiment>/<log_subdir>/model_*.pt` 最新步数并续训
+- 设置 `INIT_FROM` 时仅加载权重，不自动 `--resume`
+
+---
+
+## 8. 评估与工具脚本
+
+### 8.1 多长度验证评估
 
 ```bash
 python scripts/eval_lengths.py \
   --config baseline \
   --checkpoint log_train/baseline/log/model_15000.pt \
-  --lengths 512,1024 \
-  --data_root /path/to/shards
+  --lengths 512,1024,2048 \
+  --data_root /path/to/shards \
+  --val_steps 20
 ```
 
-### 8.3 KV cache 推理评估
+### 8.2 KV cache 速度/一致性评估
 
 ```bash
 python scripts/kv_cache_eval.py \
   --config baseline \
   --checkpoint log_train/baseline/log/model_15000.pt \
   --max_length 64 \
-  --num_return_sequences 1
+  --num_return_sequences 1 \
+  --dtype bfloat16
 ```
 
-### 8.4 训练日志绘图
+`max_length > block_size` 时需 `--allow_long`，且仅 `RoPE/ALiBi/正弦`支持长序列外推，`Learned` 不支持。
 
-`plot_training_log.py` 解析的是训练 stdout 日志（例如 `nohup` 输出），不是 `log.txt` 三列格式：
+### 8.3 HellaSwag（HF 模型基线）
 
 ```bash
-python plot_training_log.py nohup_log.txt training_curves.png 1000
+python scripts/eval_hellaswag.py --model_type gpt2 --device cuda
 ```
 
-## 9. 常见问题
+### 8.4 迁移旧 checkpoint 到 schema v2
 
-### Q1: 报错找不到 train/val shards？
+```bash
+python scripts/migrate_checkpoints.py --input /path/to/ckpt_or_dir --backup
+```
 
-检查 `--data_root` 下是否有文件名包含 `train` / `val` 的 `.npy` 文件。
+常用参数：`--dry_run`, `--output_root`, `--pattern`, `--force`。
 
-### Q2: DDP 启动失败？
+### 8.5 从训练 stdout 绘图
 
-DDP 仅支持 CUDA + NCCL，需使用 `torchrun` 启动并确保 GPU 可见。
+```bash
+python scripts/plot_training_log.py nohup_log.txt training_curves.png 1000
+```
 
-### Q3: 推理报缺少配置引用？
+注意：此脚本解析的是训练 stdout（`step ... | loss ...`），不是 `log.txt` 三列文件。
 
-在 `infer` 命令中增加 `--config`，例如 `--config baseline`。
+---
 
-### Q4: 夜间脚本没续上 checkpoint？
+## 9. 脚本参数速查（完整）
 
-检查 `EXPERIMENT_NAME`、`LOG_SUBDIR` 与实际日志目录是否一致。
+### 9.1 `scripts/preprocess_data.py`
 
-### Q5: checkpoint 版本不支持？
+- `--input`（必填）：输入文件或目录
+- `--format`：`auto/jsonl/parquet`
+- `--output_dir`（必填）
+- `--prefix`：输出 shard 前缀（默认 `dataset`）
+- `--text_field`：文本字段名（默认 `text`）
+- `--tokenizer`：tiktoken 编码名（默认 `gpt2`）
+- `--val_ratio`：随机切分验证集比例（仅无 `--split_field` 时生效）
+- `--split_field`：已有划分字段名（如 `partition`）
+- `--train_split/--val_split/--test_split`：字段值映射
+- `--shard_tokens`：每 shard token 数（默认 `50000000`）
+- `--min_chars/--max_chars`：样本长度过滤
+- `--min_tail_tokens`：尾 shard 最小 token，低于阈值丢弃（默认 `1024`）
+- `--add_eot`：每条样本末尾追加 EOT
+- `--streaming`：使用流式读取
+- `--seed`：随机种子
 
-先用 `scripts/migrate_checkpoints.py` 迁移到 `schema_version=2`。
+### 9.2 `scripts/eval_lengths.py`
 
-## 10. 开发建议
+- `--config`（必填）
+- `--checkpoint`（必填）
+- `--lengths`（必填，逗号分隔，如 `512,1024,2048`）
+- `--data_root`（必填）
+- `--val_steps`（默认 `20`）
+- `--batch_size`（默认使用训练配置的 `micro_batch_size`）
+- `--device`：`cuda/mps/cpu`（默认自动）
 
-- 新实验建议放到 `configs/experiments/*.yaml`，并尽量复用 `configs/base/*.yaml`
-- 大模型 checkpoint 请勿提交到仓库
-- 修改核心训练逻辑后，建议至少做一次：
-  - 短程 train（含保存/恢复）
-  - infer
-  - `scripts/kv_cache_eval.py` 一致性检查
+### 9.3 `scripts/kv_cache_eval.py`
+
+- `--config`（必填）
+- `--checkpoint`（可选；不填时需提供 `--log_subdir` 或 `--log_dir` 自动找最新）
+- `--log_subdir` / `--log_dir`
+- `--prompt`
+- `--max_length`
+- `--top_k`
+- `--temperature`
+- `--num_return_sequences`
+- `--seed`
+- `--dtype`：`float32/bfloat16`
+- `--allow_long`：允许超过训练长度（仅 RoPE/ALiBi/正弦）
+
+### 9.4 `scripts/migrate_checkpoints.py`
+
+- `--input`（必填）：单文件或目录
+- `--pattern`：目录扫描匹配模式（默认 `model_*.pt`）
+- `--no_recursive`：关闭递归扫描
+- `--output_root`：输出到新目录（不填则就地覆盖）
+- `--dry_run`：仅预览不写文件
+- `--force`：即使已是 v2 也重写
+- `--backup`：就地覆盖前备份
+- `--backup_suffix`：备份后缀（默认 `.v1.bak`）
+- `--overwrite_backup`：允许覆盖已有备份
+
+### 9.5 `scripts/eval_hellaswag.py`
+
+- `-m/--model_type`：HF 模型名（默认 `gpt2`）
+- `-d/--device`：评估设备（默认 `cuda`）
+
+---
+
+## 10. Checkpoint 规范（v2）
+
+主流程仅支持 `schema_version=2`。核心字段：
+
+- `schema_version`
+- `model`
+- `config_dict`
+- `step`
+- 可选：`optimizer`, `train_loader_state`, `experiment_name`, `config_ref`, `val_loss`
+
+恢复训练时会尝试恢复优化器与数据加载进度；如果 shard 与 checkpoint 不匹配会报错并中止。
+
+---
+
+## 11. 常见问题
+
+- **找不到 shard**：确认 `--data_root` 下存在文件名包含 `train` / `val` 的 `.npy`。
+- **`total_batch_size` 断言失败**：调整使其可被 `micro_batch_size * sequence_length * world_size` 整除。
+- **infer 报配置缺失**：补 `--config <experiment>`。
+- **checkpoint 版本不支持**：先运行 `scripts/migrate_checkpoints.py` 迁移到 v2。
+- **DDP 启动失败**：确认 CUDA/NCCL 可用，并使用 `torchrun` 启动。
