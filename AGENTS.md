@@ -1,43 +1,38 @@
 # Repository Guidelines
 
-## Language Preference
-- All user-facing text should be in Chinese, including logs, status messages, and explanations.
-- Do not output chain-of-thought or hidden reasoning; provide concise Chinese answers and results only.
+## 项目结构与模块组织
+- `train.py`：统一入口，使用子命令 `train` / `infer`。
+- `core/`：运行时初始化、YAML 实验加载、checkpoint 读写、数据加载与训练循环。
+- `models/gpt.py`：GPT 主模型定义；`modules/`：attention / position / mlp / norm 可插拔组件。
+- `configs/base/`：可复用基础配置；`configs/experiments/`：实验配置（如 `baseline.yaml`、`rope.yaml`、`mqa.yaml`）。
+- `scripts/`：预处理、多长度评估、KV cache 评估、checkpoint 迁移工具。
+- `hellaswag/` 与 `hellaswag.py`：HellaSwag 数据缓存与评估脚本。
 
-## Project Structure & Module Organization
-- `train.py` is the main entry point for training, resume, and inference.
-- `core/` contains configuration, data loading, and training utilities.
-- `models/` defines the GPT model (`gpt.py`).
-- `modules/` contains attention blocks, MLP variants, normalization, and position encodings.
-- `configs/experiments/` holds YAML experiment configs (e.g., `baseline.yaml`, `rope.yaml`, `mqa.yaml`).
-- `configs/base/` holds shared base YAML configs for inheritance.
-- `hellaswag/` stores cached HellaSwag `.jsonl` datasets; `hellaswag.py` handles download/eval.
-- `train_nightly.sh` runs multi‑GPU training and auto‑resumes from the latest checkpoint.
+## 构建、测试与开发命令
+- 安装依赖：`python -m pip install -r requirements.txt`
+- 预处理数据：`python scripts/preprocess_data.py --input <raw_data> --output_dir <shards_dir> --format auto --text_field text`
+- 单进程训练：`python train.py train --config baseline --data_root <shards_dir> --log_subdir log`
+- 恢复训练：`python train.py train --config baseline --data_root <shards_dir> --log_subdir log --resume log_train/baseline/log/model_15000.pt`
+- 推理：`python train.py infer --checkpoint log_train/baseline/log/model_15000.pt`
+- 夜间多卡：`CONFIG_PATH=configs/experiments/mla.yaml LOG_SUBDIR=log DATASET_ROOT=<shards_dir> bash train_nightly.sh`
 
-## Build, Test, and Development Commands
-- Install deps: `python -m pip install -r requirements.txt`
-- Train (single process): `python train.py --config baseline`
-- Resume: `python train.py --config baseline --resume log_train/baseline/log/model_15000.pt`
-- Inference: `python train.py --config baseline --inference log_train/baseline/log/model_15000.pt`
-- Nightly multi‑GPU: `CONFIG_PATH=configs/experiments/mla.yaml bash train_nightly.sh`
-- HellaSwag eval: `python hellaswag.py --model_type gpt2 --device cuda`
+## 编码风格与命名规范
+- Python 使用 4 空格缩进。
+- 函数/模块使用 `snake_case`，类使用 `CamelCase`（如 `GPT`, `GPTConfig`）。
+- 新实验优先通过 YAML 继承组织：公共项放 `configs/base/*.yaml`，变体放 `configs/experiments/*.yaml`。
+- 对复杂数学或分布式逻辑仅添加简短必要注释，避免冗余注释。
 
-## Coding Style & Naming Conventions
-- Python with 4‑space indentation.
-- Modules and functions use `snake_case`; classes use `CamelCase` (e.g., `GPT`, `GPTConfig`).
-- Keep experiment configs in `experiments/` and name files after the variant (`rope.py`, `gqa.py`).
-- Prefer lightweight comments for non‑obvious math or distributed logic.
+## 测试指南
+- 仓库当前无独立测试套件；核心改动后至少执行一次短程 `train` + `infer`。
+- 可选回归检查：`python scripts/kv_cache_eval.py --config baseline --checkpoint <ckpt> --max_length 64 --num_return_sequences 1`
+- 质量趋势可用：`python hellaswag.py --model_type gpt2 --device cuda`
+- 若新增测试，请放在 `tests/` 下并使用 `test_*.py` 命名。
 
-## Testing Guidelines
-- No dedicated test suite in this repo.
-- Use `hellaswag.py` to sanity‑check model quality and regression trends.
-- If you add tests, place them under `tests/` and use `test_*.py` naming.
+## 提交与 PR 规范
+- 提交信息建议简短祈使句，遵循现有风格：`add ...`、`fix ...`、`modify ...`、`refactor ...`。
+- 每次提交只聚焦一个改动主题（例如“checkpoint 迁移”或“新增 rope 实验”）。
+- PR 请包含：改动目的、关键配置、复现实验命令、主要指标（如 HellaSwag 准确率）与潜在风险。
 
-## Commit & Pull Request Guidelines
-- Recent commits use short, imperative subjects like `add ...`, `fix ...`, `modify ...`.
-- Keep commits focused on one change area.
-- PRs should describe the experiment or model change, training settings, and any metrics (e.g., HellaSwag accuracy).
-
-## Security & Configuration Tips
-- Checkpoint paths are under `log_train/<experiment>/log/`; avoid committing large checkpoints.
-- For DDP, ensure `torchrun` and CUDA are available before running `train_nightly.sh`.
+## 安全与配置提示
+- checkpoint 默认写入 `log_train/<experiment>/log/`；不要提交大模型权重到仓库。
+- 主训练/推理流程仅支持 `schema_version=2` checkpoint；旧文件先用 `scripts/migrate_checkpoints.py` 迁移。
