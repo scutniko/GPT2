@@ -90,7 +90,8 @@ class MoEMLP(nn.Module):
 
         # 容量限制（可选）
         capacity = None
-        if self.capacity_factor > 0:
+        # 仅训练阶段启用容量裁剪；推理/评估关闭以保证分块与整段行为一致
+        if self.training and self.capacity_factor > 0:
             capacity = int(self.capacity_factor * (x_flat.size(0) / self.n_experts))
             capacity = max(capacity, 1)
 

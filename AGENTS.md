@@ -17,6 +17,11 @@
 - 推理：`python train.py infer --checkpoint log_train/baseline/log/model_15000.pt`
 - 夜间多卡：`CONFIG_PATH=configs/experiments/mla.yaml LOG_SUBDIR=log DATASET_ROOT=<shards_dir> bash train_nightly.sh`
 
+## Python 环境约定
+- 运行 Python 相关命令时，统一使用解释器：`D:\Softwares\Anaconda\envs\torch\python.exe`。
+- 不要使用系统默认 `python` 或其他环境中的解释器。
+- 命令示例：`D:\Softwares\Anaconda\envs\torch\python.exe train.py train --config baseline --data_root <shards_dir> --log_subdir log`。
+
 ## 编码风格与命名规范
 - Python 使用 4 空格缩进。
 - 函数/模块使用 `snake_case`，类使用 `CamelCase`（如 `GPT`, `GPTConfig`）。
