@@ -148,7 +148,26 @@ class DataLoaderLite:
     def _load_shard_for_rank(self, shard_idx):
         self.current_shard = shard_idx
         self.tokens = load_tokens(self.shards[self.current_shard])
-        self.current_position = self.B * self.T * self.process_rank
+        self.current_position = self._rank_offset()
+
+    def _rank_offset(self):
+        return self.B * self.T * self.process_rank
+
+    def _global_stride(self):
+        return self.B * self.T * self.num_processes
+
+    def get_rank0_position(self):
+        """
+        返回当前 shard 内 rank0 的逻辑位置。
+        该值与 rank 无关，用于 DDP 对齐与 checkpoint 恢复。
+        """
+        rank0_position = self.current_position - self._rank_offset()
+        if rank0_position < 0:
+            raise ValueError(
+                f"非法 loader 状态: current_position={self.current_position}, "
+                f"rank_offset={self._rank_offset()}"
+            )
+        return rank0_position
 
     def reset(self):
         """重置数据加载器状态"""
@@ -178,9 +197,11 @@ class DataLoaderLite:
         x = (buf[:-1]).view(B, T)  # inputs
         y = (buf[1:]).view(B, T)  # targets
         # advance the position in the tensor
-        self.current_position += B * T * self.num_processes
-        # if loading the next batch would be out of bounds, advance to next shard
-        if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
+        self.current_position += self._global_stride()
+        # 使用 rank0 的逻辑位置判定切 shard，避免不同 rank 提前/滞后切换
+        # 导致同一步落在不同 shard 上。
+        rank0_position = self.get_rank0_position()
+        if rank0_position + (self._global_stride() + 1) > len(self.tokens):
             shard_idx = self._find_next_valid_shard(start_idx=self.current_shard + 1)
             self._load_shard_for_rank(shard_idx)
         return x, y

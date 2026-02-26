@@ -158,11 +158,17 @@ def restore_loader_state(train_loader, resume_loader_state, start_step, log_file
     if resume_loader_state is None:
         return
 
-    if "current_shard" not in resume_loader_state or "current_position" not in resume_loader_state:
-        raise KeyError("train_loader_state 缺少 current_shard/current_position")
+    has_rank0_position = "rank0_position" in resume_loader_state
+    has_current_position = "current_position" in resume_loader_state
+    if "current_shard" not in resume_loader_state or (not has_rank0_position and not has_current_position):
+        raise KeyError("train_loader_state 缺少 current_shard 与 rank0_position/current_position")
 
     current_shard = int(resume_loader_state["current_shard"])
-    rank0_position = int(resume_loader_state["current_position"])
+    rank0_position = int(
+        resume_loader_state["rank0_position"]
+        if has_rank0_position
+        else resume_loader_state["current_position"]
+    )
     rank_offset = train_loader.B * train_loader.T * train_loader.process_rank
     restored_position = rank0_position + rank_offset
 
@@ -214,6 +220,11 @@ def save_checkpoint(
     config_ref=None,
 ):
     """保存训练检查点。"""
+    rank0_position = (
+        train_loader.get_rank0_position()
+        if hasattr(train_loader, "get_rank0_position")
+        else train_loader.current_position
+    )
     checkpoint = {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "model": raw_model.state_dict(),
@@ -223,7 +234,9 @@ def save_checkpoint(
         "optimizer": optimizer.state_dict(),
         "train_loader_state": {
             "current_shard": train_loader.current_shard,
-            "current_position": train_loader.current_position,
+            # 兼容旧字段名，同时显式保存 rank0 语义，便于多卡恢复。
+            "current_position": rank0_position,
+            "rank0_position": rank0_position,
         },
     }
     if experiment_name is not None:
