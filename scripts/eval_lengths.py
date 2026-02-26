@@ -3,7 +3,6 @@ Evaluate a saved checkpoint on multiple sequence lengths.
 """
 
 import argparse
-import contextlib
 import math
 import os
 import sys
@@ -22,6 +21,7 @@ from core.checkpoint import (
 )
 from core.data_loader import DataLoaderLite
 from core.experiment import load_experiment_spec
+from core.runtime import get_autocast_context, infer_device_type
 from models.gpt import GPT
 from modules.position_encodings import LearnedPositionEncoding, SinusoidalPositionalEncoding
 
@@ -118,12 +118,7 @@ def main():
     model.eval()
 
     batch_size = args.batch_size if args.batch_size is not None else train_config["micro_batch_size"]
-    device_type = "cuda" if device.startswith("cuda") else "cpu"
-    amp_ctx = (
-        torch.autocast(device_type=device_type, dtype=torch.bfloat16)
-        if device_type == "cuda"
-        else contextlib.nullcontext()
-    )
+    device_type = infer_device_type(device)
 
     print(f"实验: {spec.experiment_name}")
     print(f"checkpoint: {args.checkpoint}")
@@ -151,7 +146,7 @@ def main():
             for _ in range(args.val_steps):
                 x, y = val_loader.next_batch()
                 x, y = x.to(device), y.to(device)
-                with amp_ctx:
+                with get_autocast_context(device_type):
                     _, loss = model(x, y)
                 loss_accum += loss.detach().float().item()
 

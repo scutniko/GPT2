@@ -354,9 +354,26 @@ class GPT(nn.Module):
         # 创建AdamW优化器，并使用fused版本（如果可用）
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         use_fused = fused_available and device_type == "cuda"
-        
+
+        adamw_kwargs = {
+            "lr": learning_rate,
+            "betas": (0.9, 0.95),
+            "eps": 1e-8,
+        }
+        if use_fused:
+            adamw_kwargs["fused"] = True
+
         if master_process:
             print(f"using fused AdamW: {use_fused}")
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
+        try:
+            optimizer = torch.optim.AdamW(optim_groups, **adamw_kwargs)
+        except TypeError:
+            if "fused" not in adamw_kwargs:
+                raise
+            adamw_kwargs.pop("fused", None)
+            use_fused = False
+            if master_process:
+                print("fused AdamW 不可用，已回退到非 fused AdamW")
+            optimizer = torch.optim.AdamW(optim_groups, **adamw_kwargs)
         return optimizer
 

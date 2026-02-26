@@ -169,6 +169,16 @@ class DataLoaderLite:
             )
         return rank0_position
 
+    def _should_advance_shard(self):
+        """是否应切换到下一个 shard（按 rank0 逻辑位置判定）。"""
+        rank0_position = self.get_rank0_position()
+        return rank0_position + (self._global_stride() + 1) > len(self.tokens)
+
+    def _advance_to_next_shard(self):
+        """切换到下一个可用 shard。"""
+        shard_idx = self._find_next_valid_shard(start_idx=self.current_shard + 1)
+        self._load_shard_for_rank(shard_idx)
+
     def reset(self):
         """重置数据加载器状态"""
         # state, init at shard zero（若过短则自动跳过）
@@ -178,31 +188,23 @@ class DataLoaderLite:
     def next_batch(self):
         """获取下一个batch"""
         B, T = self.B, self.T
-        if self.current_position + B * T + 1 > len(self.tokens):
-            shard_idx = self._find_next_valid_shard(start_idx=self.current_shard + 1)
-            self._load_shard_for_rank(shard_idx)
+        if self._should_advance_shard():
+            self._advance_to_next_shard()
 
         buf = self.tokens[self.current_position : self.current_position+B*T+1]
-        if buf.numel() < (B * T + 1):
-            shard_idx = self._find_next_valid_shard(start_idx=self.current_shard + 1)
-            self._load_shard_for_rank(shard_idx)
-            buf = self.tokens[self.current_position : self.current_position+B*T+1]
-            if buf.numel() < (B * T + 1):
-                raise RuntimeError(
-                    "切换 shard 后仍无法取到完整 batch，"
-                    f"shard={self.current_shard}, position={self.current_position}, "
-                    f"need={B * T + 1}, got={buf.numel()}"
-                )
+        if buf.numel() != (B * T + 1):
+            raise RuntimeError(
+                "DataLoaderLite 状态不一致：无法取到完整 batch。"
+                f" shard={self.current_shard}, position={self.current_position}, "
+                f"rank0_position={self.get_rank0_position()}, "
+                f"need={B * T + 1}, got={buf.numel()}, tokens={len(self.tokens)}"
+            )
 
         x = (buf[:-1]).view(B, T)  # inputs
         y = (buf[1:]).view(B, T)  # targets
         # advance the position in the tensor
         self.current_position += self._global_stride()
-        # 使用 rank0 的逻辑位置判定切 shard，避免不同 rank 提前/滞后切换
-        # 导致同一步落在不同 shard 上。
-        rank0_position = self.get_rank0_position()
-        if rank0_position + (self._global_stride() + 1) > len(self.tokens):
-            shard_idx = self._find_next_valid_shard(start_idx=self.current_shard + 1)
-            self._load_shard_for_rank(shard_idx)
+        if self._should_advance_shard():
+            self._advance_to_next_shard()
         return x, y
 

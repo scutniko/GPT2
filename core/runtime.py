@@ -3,6 +3,7 @@
 """
 
 import os
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 import torch
@@ -18,6 +19,37 @@ class RuntimeContext:
     device: str
     device_type: str
     master_process: bool
+
+
+def infer_device_type(device):
+    """根据设备字符串返回 device_type（cuda/mps/cpu）。"""
+    if str(device).startswith("cuda"):
+        return "cuda"
+    if str(device).startswith("mps"):
+        return "mps"
+    return "cpu"
+
+
+def get_autocast_context(device_type):
+    """
+    返回与设备匹配的 autocast 上下文。
+    - cuda: bfloat16
+    - mps: float16（不支持时降级为 nullcontext）
+    - cpu: bfloat16（不支持时降级为 nullcontext）
+    """
+    if device_type == "cuda":
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    if device_type == "mps":
+        try:
+            return torch.autocast(device_type="mps", dtype=torch.float16)
+        except (TypeError, RuntimeError):
+            return nullcontext()
+    if device_type == "cpu":
+        try:
+            return torch.autocast(device_type="cpu", dtype=torch.bfloat16)
+        except (TypeError, RuntimeError):
+            return nullcontext()
+    return nullcontext()
 
 
 def setup_runtime():
@@ -46,7 +78,7 @@ def setup_runtime():
             device = "mps"
         print(f"使用设备: {device}")
 
-    device_type = "cuda" if device.startswith("cuda") else "cpu"
+    device_type = infer_device_type(device)
     return RuntimeContext(
         ddp=ddp,
         ddp_rank=ddp_rank,
@@ -69,4 +101,3 @@ def cleanup_runtime(ctx):
     """释放分布式资源。"""
     if ctx.ddp:
         destroy_process_group()
-

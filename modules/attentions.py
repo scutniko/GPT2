@@ -344,6 +344,11 @@ class MLAAttention(nn.Module):
         # 通常设置为 n_embd 的 1/4 到 1/2，这里使用 1/4 以获得更好的压缩比
         self.kv_lora_rank = config.kv_lora_rank  # KV 低秩维度
         self.q_lora_rank = config.q_lora_rank    # Q 低秩维度
+        self.cache_mode = str(getattr(config, "mla_cache_mode", "full")).lower()
+        if self.cache_mode not in {"full", "latent"}:
+            raise ValueError(
+                f"mla_cache_mode 仅支持 full/latent，实际为: {self.cache_mode}"
+            )
         
         # === MLA 的三阶段投影 ===
         
@@ -372,23 +377,35 @@ class MLAAttention(nn.Module):
         B, T, C = x.size()
         past_k = None
         past_v = None
+        past_kv_latent = None
+        past_len = 0
         if past_kv is not None:
-            if not isinstance(past_kv, (tuple, list)) or len(past_kv) != 2:
-                raise ValueError("MLA past_kv 必须是 (k, v) 二元组")
-            past_k, past_v = past_kv
-            if past_k.dim() != 4 or past_v.dim() != 4:
-                raise ValueError("MLA cache 的 k/v 维度必须是 [B, n_head, T, head_dim]")
-            if past_k.size(0) != B or past_v.size(0) != B:
-                raise ValueError("MLA cache 的 batch size 与当前输入不匹配")
-            if past_k.size(1) != self.n_head or past_v.size(1) != self.n_head:
-                raise ValueError("MLA cache 的 n_head 与当前配置不匹配")
-            if past_k.size(3) != self.head_dim or past_v.size(3) != self.head_dim:
-                raise ValueError("MLA cache 的 head_dim 与当前配置不匹配")
-            if past_k.size(2) != past_v.size(2):
-                raise ValueError("MLA cache 的 k/v 序列长度不一致")
-            past_len = past_k.size(2)
-        else:
-            past_len = 0
+            if self.cache_mode == "full":
+                if not isinstance(past_kv, (tuple, list)) or len(past_kv) != 2:
+                    raise ValueError("MLA(full) past_kv 必须是 (k, v) 二元组")
+                past_k, past_v = past_kv
+                if past_k.dim() != 4 or past_v.dim() != 4:
+                    raise ValueError("MLA(full) cache 的 k/v 维度必须是 [B, n_head, T, head_dim]")
+                if past_k.size(0) != B or past_v.size(0) != B:
+                    raise ValueError("MLA(full) cache 的 batch size 与当前输入不匹配")
+                if past_k.size(1) != self.n_head or past_v.size(1) != self.n_head:
+                    raise ValueError("MLA(full) cache 的 n_head 与当前配置不匹配")
+                if past_k.size(3) != self.head_dim or past_v.size(3) != self.head_dim:
+                    raise ValueError("MLA(full) cache 的 head_dim 与当前配置不匹配")
+                if past_k.size(2) != past_v.size(2):
+                    raise ValueError("MLA(full) cache 的 k/v 序列长度不一致")
+                past_len = past_k.size(2)
+            else:
+                if isinstance(past_kv, (tuple, list)):
+                    raise ValueError("MLA(latent) past_kv 必须是 [B, T, kv_lora_rank] 张量")
+                past_kv_latent = past_kv
+                if past_kv_latent.dim() != 3:
+                    raise ValueError("MLA(latent) cache 维度必须是 [B, T, kv_lora_rank]")
+                if past_kv_latent.size(0) != B:
+                    raise ValueError("MLA(latent) cache 的 batch size 与当前输入不匹配")
+                if past_kv_latent.size(2) != self.kv_lora_rank:
+                    raise ValueError("MLA(latent) cache 的 kv_lora_rank 与当前配置不匹配")
+                past_len = past_kv_latent.size(1)
         
         # === MLA 前向传播 ===
         
@@ -400,33 +417,48 @@ class MLAAttention(nn.Module):
         kv_latent = latent[:, :, :self.kv_lora_rank]  # [B, T, kv_lora_rank]
         q_latent = latent[:, :, self.kv_lora_rank:]   # [B, T, q_lora_rank]
         
-        # 步骤2: 从潜在空间解压 KV（仅对当前 chunk 计算）
-        # [B, T, kv_lora_rank] -> [B, T, 2 * C]
-        kv = self.kv_up_proj(kv_latent)
-        k_new, v_new = kv.split(self.n_embd, dim=2)  # 各为 [B, T, C]
-        
-        # 步骤3: 从潜在空间解压 Q
+        # 步骤2: 从潜在空间解压 Q
         # [B, T, q_lora_rank] -> [B, T, C]
         q = self.q_up_proj(q_latent)
         
         # 步骤4: 重塑为多头格式
         # Q: [B, T, C] -> [B, n_head, T, head_dim]
-        # K/V(new): [B, T, C] -> [B, n_head, T, head_dim]
         q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
-        k_new = k_new.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
-        v_new = v_new.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
-        
-        # 应用 RoPE（如果有）
-        if self.rope is not None:
-            q, k_new = self.rope(q, k_new, start_pos=past_len)
 
-        # 拼接 KV cache（缓存已是投影后的 k/v，避免历史反复解压）
-        if past_k is not None:
-            k = torch.cat((past_k, k_new), dim=2)
-            v = torch.cat((past_v, v_new), dim=2)
+        if self.cache_mode == "latent":
+            if past_kv_latent is not None:
+                kv_latent_all = torch.cat((past_kv_latent, kv_latent), dim=1)
+            else:
+                kv_latent_all = kv_latent
+
+            # 从 latent cache 重建全历史 K/V
+            kv_all = self.kv_up_proj(kv_latent_all)  # [B, K, 2*C]
+            k_all, v_all = kv_all.split(self.n_embd, dim=2)
+            k = k_all.view(B, kv_latent_all.size(1), self.n_head, self.head_dim).transpose(1, 2)
+            v = v_all.view(B, kv_latent_all.size(1), self.n_head, self.head_dim).transpose(1, 2)
+
+            # q 使用绝对位置 [past_len, past_len+T)，k 使用全历史绝对位置 [0, K)
+            if self.rope is not None:
+                q = self.rope.apply_rotary_emb_to_tensor(q, start_pos=past_len)
+                k = self.rope.apply_rotary_emb_to_tensor(k, start_pos=0)
+            present_kv = kv_latent_all
         else:
-            k = k_new
-            v = v_new
+            # full 模式：cache 保存完整 K/V
+            kv = self.kv_up_proj(kv_latent)
+            k_new, v_new = kv.split(self.n_embd, dim=2)  # 各为 [B, T, C]
+            k_new = k_new.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+            v_new = v_new.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+
+            if self.rope is not None:
+                q, k_new = self.rope(q, k_new, start_pos=past_len)
+
+            if past_k is not None:
+                k = torch.cat((past_k, k_new), dim=2)
+                v = torch.cat((past_v, v_new), dim=2)
+            else:
+                k = k_new
+                v = v_new
+            present_kv = (k, v)
         
         # 应用 ALiBi（如果有）
         attn_bias = None
@@ -445,7 +477,6 @@ class MLAAttention(nn.Module):
         # 步骤7: 输出投影
         y = self.c_proj(y)
         if use_cache:
-            present_kv = (k, v)
             return y, present_kv
         return y
 

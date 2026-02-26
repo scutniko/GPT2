@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks.hellaswag import iterate_examples, render_example
+from core.runtime import get_autocast_context
 from core.training_utils import get_most_likely_row
 
 
@@ -77,7 +78,7 @@ def run_inference(
 
     while xgen.size(1) < max_length:
         with torch.no_grad():
-            with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+            with get_autocast_context(device_type):
                 logits, _ = model(xgen)
             logits = logits[:, -1, :]
             if temperature != 1.0:
@@ -105,7 +106,7 @@ def evaluate_validation_loss(model, val_loader, device, device_type, val_loss_st
         for _ in range(val_loss_steps):
             x, y = val_loader.next_batch()
             x, y = x.to(device), y.to(device)
-            with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+            with get_autocast_context(device_type):
                 _, loss = model(x, y)
             loss = loss / val_loss_steps
             val_loss_accum += loss.detach()
@@ -123,7 +124,7 @@ def evaluate_hellaswag_local(model, device, device_type, ddp_rank, ddp_world_siz
         tokens = tokens.to(device)
         mask = mask.to(device)
         with torch.no_grad():
-            with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+            with get_autocast_context(device_type):
                 logits, _ = model(tokens)
             pred_norm = get_most_likely_row(tokens, mask, logits)
         num_total += 1
@@ -152,7 +153,7 @@ def generate_samples_for_rank(
 
     while xgen.size(1) < max_length:
         with torch.no_grad():
-            with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+            with get_autocast_context(device_type):
                 logits, _ = model(xgen)
             logits = logits[:, -1, :]
             probs = F.softmax(logits, dim=-1)

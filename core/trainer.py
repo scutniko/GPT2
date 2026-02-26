@@ -14,6 +14,7 @@ from core.evaluator import (
     evaluate_validation_loss,
     generate_samples_for_rank,
 )
+from core.runtime import get_autocast_context
 from core.training_utils import get_lr
 
 
@@ -56,23 +57,31 @@ def run_train_loop(
 
         model.train()
         optimizer.zero_grad()
-        loss_accum = 0.0
+        total_loss_accum = torch.zeros((), device=device)
+        ce_loss_accum = torch.zeros((), device=device)
+        aux_loss_accum = torch.zeros((), device=device)
         for micro_step in range(grad_accum_steps):
             x, y = train_loader.next_batch()
             x, y = x.to(device), y.to(device)
             if ddp:
                 model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
-            with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                _, loss = model(x, y)
+            with get_autocast_context(device_type):
+                _, ce_loss = model(x, y)
+            aux_loss_term = torch.zeros_like(ce_loss)
             if moe_aux_weight > 0:
                 aux_loss = raw_model.get_moe_aux_loss() if hasattr(raw_model, "get_moe_aux_loss") else None
                 if aux_loss is not None:
-                    loss = loss + moe_aux_weight * aux_loss
-            loss = loss / grad_accum_steps
-            loss_accum += loss.detach()
-            loss.backward()
+                    aux_loss_term = moe_aux_weight * aux_loss
+            total_loss = ce_loss + aux_loss_term
+            total_loss = total_loss / grad_accum_steps
+            total_loss_accum += total_loss.detach()
+            ce_loss_accum += (ce_loss / grad_accum_steps).detach()
+            aux_loss_accum += (aux_loss_term / grad_accum_steps).detach()
+            total_loss.backward()
         if ddp:
-            dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
+            dist.all_reduce(total_loss_accum, op=dist.ReduceOp.AVG)
+            dist.all_reduce(ce_loss_accum, op=dist.ReduceOp.AVG)
+            dist.all_reduce(aux_loss_accum, op=dist.ReduceOp.AVG)
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
         lr = get_lr(step, warmup_steps, max_steps, max_lr, min_lr)
@@ -88,12 +97,16 @@ def run_train_loop(
         tokens_per_sec = tokens_processed / dt
         if master_process:
             print(
-                f"step {step:5d} | loss: {loss_accum.item():.6f} | "
+                f"step {step:5d} | loss: {total_loss_accum.item():.6f} | "
+                f"ce: {ce_loss_accum.item():.6f} | aux: {aux_loss_accum.item():.6f} | "
                 f"lr {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | "
                 f"tok/sec: {tokens_per_sec:.2f}"
             )
             with open(log_file, "a", encoding="utf-8") as f:
-                f.write(f"{step} train {loss_accum.item():.6f}\n")
+                f.write(
+                    f"{step} train {total_loss_accum.item():.6f} "
+                    f"ce={ce_loss_accum.item():.6f} aux={aux_loss_accum.item():.6f}\n"
+                )
 
         if should_eval:
             model.eval()

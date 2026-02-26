@@ -146,6 +146,15 @@ class RoPE(nn.Module):
         emb = torch.cat((freqs, freqs), dim=-1)  # [seq_len, dim]
         self.register_buffer("cos_cached", emb.cos()[None, None, :, :], persistent=False)
         self.register_buffer("sin_cached", emb.sin()[None, None, :, :], persistent=False)
+
+    def _get_cos_sin(self, seq_len, start_pos=0):
+        """获取指定位置区间的 cos/sin 缓存。"""
+        end_pos = start_pos + seq_len
+        if end_pos > self.cos_cached.shape[2]:
+            self._init_cache(end_pos)
+        cos = self.cos_cached[:, :, start_pos:end_pos, :]
+        sin = self.sin_cached[:, :, start_pos:end_pos, :]
+        return cos, sin
     
     def forward(self, q, k, start_pos=0):
         """
@@ -159,21 +168,18 @@ class RoPE(nn.Module):
             q_rot, k_rot: 应用RoPE后的q和k
         """
         seq_len = q.shape[2]
-        end_pos = start_pos + seq_len
-        
-        # 如果序列长度超过缓存，重新计算
-        if end_pos > self.cos_cached.shape[2]:
-            self._init_cache(end_pos)
-        
-        # 获取对应长度的cos和sin
-        cos = self.cos_cached[:, :, start_pos:end_pos, :]
-        sin = self.sin_cached[:, :, start_pos:end_pos, :]
+        cos, sin = self._get_cos_sin(seq_len, start_pos=start_pos)
         
         # 应用旋转
         q_rot = self.apply_rotary_emb(q, cos, sin)
         k_rot = self.apply_rotary_emb(k, cos, sin)
         
         return q_rot, k_rot
+
+    def apply_rotary_emb_to_tensor(self, x, start_pos=0):
+        """对单个张量应用 RoPE。"""
+        cos, sin = self._get_cos_sin(x.shape[2], start_pos=start_pos)
+        return self.apply_rotary_emb(x, cos, sin)
     
     @staticmethod
     def apply_rotary_emb(x, cos, sin):
