@@ -146,15 +146,21 @@ python train.py train \
 
 ### 4.3 训练参数
 
-`train.py train` 关键参数:
+`train.py train` 参数详解:
 
-- `--config` (必填): 实验配置名或配置路径
-- `--data_root` (必填): token shard 目录
-- `--log_subdir` (必填): 输出到 `log_train/<experiment>/<log_subdir>/`
-- `--resume`: 从 checkpoint 恢复（恢复模型+优化器+dataloader状态）
-- `--init_from`: 仅加载模型权重（不恢复优化器/step）
+| 参数 | 必填 | 默认值 | 说明 | 注意事项 |
+|---|---|---|---|---|
+| `--config` | 是 | 无 | 实验配置名或配置路径 | 可写 `baseline` 或 `configs/experiments/baseline.yaml` |
+| `--data_root` | 是 | 无 | token shard 根目录 | 目录内需有包含 `train` / `val` 的 `.npy` 文件 |
+| `--log_subdir` | 是 | 无 | 日志子目录 | 最终输出路径: `log_train/<experiment>/<log_subdir>/` |
+| `--resume` | 否 | `None` | 从 checkpoint 继续训练 | 恢复模型、优化器、dataloader 位置、step |
+| `--init_from` | 否 | `None` | 从 checkpoint 加载初始权重 | 只加载模型参数，不恢复优化器和step |
 
-注意: `--resume` 与 `--init_from` 互斥。
+参数约束:
+
+- `--resume` 与 `--init_from` 不能同时传。
+- `--resume` 的 checkpoint 必须是 `schema_version=2` 且包含优化器与 loader 状态。
+- `--init_from` 只要求 checkpoint 中有 `model` 权重。
 
 ### 4.4 训练时默认行为
 
@@ -258,6 +264,21 @@ python train.py infer \
 - `learned` 位置编码不支持超过 `block_size`
 - `rope` / `alibi` / `sine` 支持长上下文推理
 
+### 6.4 推理参数详解
+
+`train.py infer` 参数详解:
+
+| 参数 | 必填 | 默认值 | 说明 | 注意事项 |
+|---|---|---|---|---|
+| `--checkpoint` | 是 | 无 | 推理用 checkpoint 路径 | 需为 `schema_version=2`，且包含 `config_ref` |
+| `--config` | 否 | `None` | 显式指定配置 | 不传则自动读取 checkpoint 的 `config_ref` |
+| `--prompt` | 否 | `"Hello, I'm a language model,"` | 提示词 | 会计入 `max_length` 总长度 |
+| `--max_length` | 否 | `32` | 生成总长度（含 prompt） | 必须 `> 0`，且不能小于 prompt token 长度 |
+| `--num_return_sequences` | 否 | `5` | 返回条数 | 必须 `> 0` |
+| `--top_k` | 否 | `50` | Top-k 采样 | 必须 `> 0` |
+| `--temperature` | 否 | `1.0` | 采样温度 | 必须 `> 0` |
+| `--seed` | 否 | `42` | 随机种子 | 同样输入下可复现采样结果 |
+
 ---
 
 ## 7. 多卡训练
@@ -293,26 +314,13 @@ bash train_nightly.sh
 
 ### 7.3 夜间脚本参数详解
 
-1. `CONFIG_PATH`
-- 默认: `configs/experiments/mla.yaml`
-- 支持相对路径或绝对路径
-- 最终会传给 `train.py train --config <CONFIG_FILE>`
-
-2. `LOG_SUBDIR`（必填）
-- 对应输出目录 `log_train/<experiment>/<LOG_SUBDIR>/`
-- 留空会直接报错退出
-
-3. `DATASET_ROOT`（必填）
-- 对应 `train.py` 的 `--data_root`
-- 留空会直接报错退出
-
-4. `EXPERIMENT_NAME`（可选）
-- 默认用配置文件名（如 `baseline.yaml -> baseline`）
-- 可手动覆盖日志目录中的实验名
-
-5. `INIT_FROM`（可选）
-- 设置后会使用 `--init_from`
-- 设置后不会自动添加 `--resume`（即使目录里有旧 checkpoint）
+| 环境变量 | 必填 | 默认值 | 说明 | 注意事项 |
+|---|---|---|---|---|
+| `CONFIG_PATH` | 否 | `configs/experiments/mla.yaml` | 配置路径 | 支持相对/绝对路径，最终透传到 `--config` |
+| `LOG_SUBDIR` | 是 | 无 | 日志子目录 | 留空会报错退出 |
+| `DATASET_ROOT` | 是 | 无 | 数据目录 | 对应 `train.py train --data_root` |
+| `EXPERIMENT_NAME` | 否 | 配置文件名 | 实验名覆盖 | 影响 `log_train/<experiment>/...` 路径 |
+| `INIT_FROM` | 否 | 未设置 | 初始化权重路径 | 设定后优先走 `--init_from`，并跳过自动 `--resume` |
 
 ### 7.4 夜间脚本常用启动模板
 
@@ -507,15 +515,21 @@ python scripts/eval_lengths.py \
 - 对比 `T=512/1024/2048` 的损失变化
 - 判断位置编码是否具备长度外推能力
 
-关键参数:
+参数详解:
 
-- `--config`: 必填，决定 attention/position/mlp/norm 组件
-- `--checkpoint`: 必填，提供权重与模型超参
-- `--lengths`: 必填，逗号分隔列表
-- `--data_root`: 必填，val shard 数据源
-- `--val_steps`: 每个长度评估的 batch 数
-- `--batch_size`: 不填则取训练配置中的 `micro_batch_size`
-- `--device`: 不填自动选 `cuda > mps > cpu`
+| 参数 | 必填 | 默认值 | 说明 | 注意事项 |
+|---|---|---|---|---|
+| `--config` | 是 | 无 | 实验配置名/路径 | 用于确定组件组合（attention/position/mlp/norm） |
+| `--checkpoint` | 是 | 无 | 待评估 checkpoint | 需能和 `--config` 组合正确加载模型 |
+| `--lengths` | 是 | 无 | 逗号分隔长度列表 | 例: `512,1024,2048`；不能为空 |
+| `--data_root` | 是 | 无 | val 数据根目录 | 需要可读取到 val shard |
+| `--val_steps` | 否 | `20` | 每个长度评估 batch 数 | 越大越稳定，耗时越长 |
+| `--batch_size` | 否 | `None` | 评估 batch size | 不传时取训练配置的 `micro_batch_size` |
+| `--device` | 否 | 自动 | `cuda/mps/cpu` | 不传时自动按 `cuda > mps > cpu` 选择 |
+
+参数约束:
+
+- `--lengths` 中每一项必须是正整数。
 
 输出解释:
 
@@ -543,16 +557,22 @@ python scripts/kv_cache_eval.py \
 - 验证 KV cache 路径与非 cache 路径是否逐 token 一致
 - 观察 CUDA 峰值显存变化
 
-关键参数:
+参数详解:
 
-- `--config`: 必填
-- `--checkpoint`: 可选，不填时需传 `--log_subdir` 或 `--log_dir` 自动找最新模型
-- `--prompt`: 输入提示词
-- `--max_length`: 总长度（包含 prompt）
-- `--top_k`, `--temperature`, `--seed`: 采样控制
-- `--num_return_sequences`: 并行生成条数
-- `--dtype`: `float32/bfloat16`
-- `--allow_long`: 允许超过训练长度（受位置编码约束）
+| 参数 | 必填 | 默认值 | 说明 | 注意事项 |
+|---|---|---|---|---|
+| `--config` | 是 | 无 | 实验配置名/路径 | 用于构建模型结构 |
+| `--checkpoint` | 否 | `None` | 指定 checkpoint | 不传时需配合 `--log_subdir` 或 `--log_dir` |
+| `--log_subdir` | 否 | `None` | 日志子目录 | 自动找 checkpoint 时路径为 `log_train/<exp>/<log_subdir>/` |
+| `--log_dir` | 否 | `None` | 日志目录绝对/相对路径 | 自动找 checkpoint 时优先级高于 `--log_subdir` |
+| `--prompt` | 否 | `"Hello, I'm a language model,"` | 提示词 | 会影响可生成 token 数 |
+| `--max_length` | 否 | `64` | 生成总长度（含 prompt） | 超过训练长度需配合 `--allow_long` |
+| `--top_k` | 否 | `50` | Top-k 采样 | 一般不超过词表大小 |
+| `--temperature` | 否 | `1.0` | 采样温度 | 温度越低越保守 |
+| `--num_return_sequences` | 否 | `1` | 并行生成条数 | 会线性增加显存占用 |
+| `--seed` | 否 | `42` | 随机种子 | 保证可复现采样 |
+| `--dtype` | 否 | `float32` | 推理精度 | `bfloat16` 在支持设备上更快、更省显存 |
+| `--allow_long` | 否 | `False` | 允许超训练长度生成 | 仅适用于 `RoPE/ALiBi/Sinusoidal` |
 
 输出解释:
 
@@ -596,14 +616,19 @@ python scripts/migrate_checkpoints.py \
   --backup
 ```
 
-关键参数:
+参数详解:
 
-- `--input`: 文件或目录
-- `--pattern`: 目录扫描匹配模式，默认 `model_*.pt`
-- `--no_recursive`: 关闭递归扫描
-- `--output_root`: 输出到新目录（不覆盖原文件）
-- `--force`: 即使已是 v2 也重新写
-- `--backup`: 就地覆盖前备份原文件
+| 参数 | 必填 | 默认值 | 说明 | 注意事项 |
+|---|---|---|---|---|
+| `--input` | 是 | 无 | checkpoint 文件或目录 | 目录模式会批量扫描 |
+| `--pattern` | 否 | `model_*.pt` | 扫描匹配模式 | `--input` 为目录时生效 |
+| `--no_recursive` | 否 | `False` | 关闭递归扫描 | 默认递归 |
+| `--output_root` | 否 | `None` | 输出根目录 | 不传则原地覆盖 |
+| `--dry_run` | 否 | `False` | 预览模式 | 不写文件，仅打印 |
+| `--force` | 否 | `False` | 强制重写 v2 文件 | 即使已是 v2 也会重写 |
+| `--backup` | 否 | `False` | 覆盖前备份 | 原地覆盖时建议开启 |
+| `--backup_suffix` | 否 | `.v1.bak` | 备份后缀 | 仅 `--backup` 生效 |
+| `--overwrite_backup` | 否 | `False` | 允许覆盖已有备份文件 | 仅 `--backup` 生效 |
 
 输出解释:
 
@@ -621,6 +646,13 @@ python scripts/eval_hellaswag.py --model_type gpt2 --device cuda
 
 - 该脚本评估的是 HuggingFace 模型，不读取本项目 checkpoint
 - 首次运行会自动下载 HellaSwag 到 `hellaswag/`
+
+参数详解:
+
+| 参数 | 必填 | 默认值 | 说明 | 注意事项 |
+|---|---|---|---|---|
+| `-m`, `--model_type` | 否 | `gpt2` | HuggingFace 模型名 | 常见值: `gpt2`, `gpt2-medium`, `gpt2-large`, `gpt2-xl` |
+| `-d`, `--device` | 否 | `cuda` | 评估设备 | 无 GPU 时改为 `cpu` 或 `mps` |
 
 ### 10.6 `plot_training_log.py`（训练日志绘图）
 
@@ -640,6 +672,14 @@ python train.py train \
 ```bash
 python scripts/plot_training_log.py train_console.log training_curves.png 0
 ```
+
+参数说明:
+
+| 位置参数 | 默认值 | 说明 | 注意事项 |
+|---|---|---|---|
+| `log_file` | `nohup_log.txt` | 控制台日志路径 | 必须包含 `step ... | loss:` 文本 |
+| `output_file` | `training_curves.png` | 输出图片路径 | 同名文件会被覆盖 |
+| `start_step` | `1000` | 绘图起始步数 | 可跳过训练早期抖动 |
 
 说明:
 
@@ -688,13 +728,33 @@ python scripts/preprocess_data.py \
   --min_tail_tokens 1024
 ```
 
-关键参数:
+参数详解:
 
-- `--text_field`: 文本字段名（字段不存在会被跳过）
-- `--val_ratio`: 不用 `split_field` 时，按概率抽样到 val
-- `--shard_tokens`: 每个 shard 的目标 token 数
-- `--min_tail_tokens`: 末尾不足阈值的 shard 会被丢弃
-- `--add_eot`: 每条样本后追加 EOT token
+| 参数 | 必填 | 默认值 | 说明 | 注意事项 |
+|---|---|---|---|---|
+| `--input` | 是 | 无 | 输入文件或目录 | 支持单文件或目录递归扫描 |
+| `--format` | 否 | `auto` | 输入格式 | 可选 `auto/jsonl/parquet`；`auto` 不允许混合格式 |
+| `--output_dir` | 是 | 无 | 输出目录 | 会自动创建 |
+| `--prefix` | 否 | `dataset` | shard 文件名前缀 | 输出文件形如 `prefix_train_000000.npy` |
+| `--text_field` | 否 | `text` | 文本字段名 | 字段缺失样本会被跳过 |
+| `--tokenizer` | 否 | `gpt2` | tiktoken 编码名 | 需是 tiktoken 支持的编码 |
+| `--val_ratio` | 否 | `0.01` | 验证集比例 | 仅在未设置 `--split_field` 时生效 |
+| `--split_field` | 否 | `None` | 样本内划分字段 | 设定后将按字段值分配 train/val/test |
+| `--train_split` | 否 | `train` | 训练集字段值 | 配合 `--split_field` 使用 |
+| `--val_split` | 否 | `val` | 验证集字段值 | 配合 `--split_field` 使用 |
+| `--test_split` | 否 | `test` | 测试集字段值 | 配合 `--split_field` 使用 |
+| `--shard_tokens` | 否 | `50000000` | 每个 shard 目标 token 数 | 必须 `> 0` |
+| `--min_chars` | 否 | `1` | 样本最小字符数 | 小于阈值样本会被跳过 |
+| `--max_chars` | 否 | `0` | 样本最大字符数 | `0` 表示不截断 |
+| `--min_tail_tokens` | 否 | `1024` | 尾 shard 最小 token 阈值 | 小于阈值的尾 shard 丢弃；必须 `>= 0` |
+| `--add_eot` | 否 | `False` | 每条样本追加 EOT | tokenizer 不支持 EOT 时会报错 |
+| `--streaming` | 否 | `False` | 流式读取 | 内存占用更低，速度可能略慢 |
+| `--seed` | 否 | `42` | 随机种子 | 影响随机切分可复现性 |
+
+参数交互:
+
+- 设定 `--split_field` 后，`--val_ratio` 不再生效。
+- `--format auto` 下若检测到混合格式（jsonl + parquet）会报错，需显式指定 `--format`。
 
 ---
 
