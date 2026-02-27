@@ -205,12 +205,9 @@ def run_infer_mode(args):
     try:
         enc = tiktoken.get_encoding("gpt2")
         ckpt = load_checkpoint_low_mem(args.checkpoint, map_location="cpu")
-        validate_checkpoint_v2(ckpt, required_fields=("model", "config_dict"))
+        validate_checkpoint_v2(ckpt, required_fields=("model", "config_dict", "config_ref"))
 
-        config_ref = args.config or ckpt.get("config_ref") or ckpt.get("experiment_name")
-        if not config_ref:
-            print("错误: infer 模式需要 --config，或 checkpoint 中包含 config_ref/experiment_name")
-            sys.exit(1)
+        config_ref = args.config or ckpt["config_ref"]
 
         spec = load_experiment_spec_or_exit(config_ref)
         if runtime_ctx.master_process:
