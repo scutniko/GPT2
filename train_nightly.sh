@@ -68,8 +68,20 @@ fi
 
 # ------------------------------------------------
 # 3. 自动探测 GPU 数量
+# 优先使用 CUDA_VISIBLE_DEVICES（集群环境通常会限制可见卡）
 # ------------------------------------------------
-if command -v nvidia-smi >/dev/null 2>&1; then
+if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  IFS=',' read -r -a _VISIBLE_DEVICES <<< "${CUDA_VISIBLE_DEVICES}"
+  GPU_COUNT=0
+  for dev in "${_VISIBLE_DEVICES[@]}"; do
+    dev="${dev//[[:space:]]/}"
+    if [[ -n "${dev}" ]]; then
+      GPU_COUNT=$((GPU_COUNT + 1))
+    fi
+  done
+  echo "[nightly] CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+  echo "[nightly] GPU count from CUDA_VISIBLE_DEVICES: ${GPU_COUNT}"
+elif command -v nvidia-smi >/dev/null 2>&1; then
   GPU_COUNT="$(nvidia-smi -L | wc -l)"
 else
   GPU_COUNT=0

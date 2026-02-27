@@ -179,11 +179,17 @@ def restore_loader_state(train_loader, resume_loader_state, start_step, log_file
 
     train_loader.current_shard = current_shard
     train_loader.tokens = load_tokens(train_loader.shards[train_loader.current_shard])
-    if restored_position + (train_loader.B * train_loader.T + 1) > len(train_loader.tokens):
+    global_tokens_required = train_loader.B * train_loader.T * train_loader.num_processes + 1
+    token_count = len(train_loader.tokens)
+
+    # 训练时 shard 切换由 rank0 逻辑位置驱动，需要按全局窗口做严格校验，
+    # 避免不同 rank 校验强度不一致，导致恢复行为依赖进程编号。
+    if rank0_position + global_tokens_required > token_count:
         raise ValueError(
-            "恢复的数据加载器位置越界，checkpoint 可能损坏或与当前数据分片不匹配: "
-            f"shard={train_loader.current_shard}, position={restored_position}, "
-            f"tokens={len(train_loader.tokens)}"
+            "恢复的数据加载器位置越界（全局窗口不足），"
+            "checkpoint 可能损坏或与当前数据分片/并行规模不匹配: "
+            f"shard={train_loader.current_shard}, rank0_position={rank0_position}, "
+            f"required_global={global_tokens_required}, tokens={token_count}"
         )
     train_loader.current_position = restored_position
 
