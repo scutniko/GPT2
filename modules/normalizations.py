@@ -17,25 +17,25 @@ class RMSNorm(nn.Module):
     其中 RMS(x) = sqrt(mean(x^2) + eps)
     """
     
-    def __init__(self, dim, eps=1e-6):
+    def __init__(self, n_embd, eps=1e-6):
         """
         Args:
-            dim: 归一化的维度
+            n_embd: 归一化维度（与模型通道维一致）
             eps: 防止除零的小常数
         """
         super().__init__()
         self.eps = eps
         # 可学习的缩放参数 γ
-        self.weight = nn.Parameter(torch.ones(dim))
+        self.weight = nn.Parameter(torch.ones(n_embd))
     
     def forward(self, x):
         """
         前向传播
         
         Args:
-            x: [B, T, dim]
+            x: [B, T, n_embd]
         Returns:
-            normalized_x: [B, T, dim]
+            normalized_x: [B, T, n_embd]
         """
         # 计算 RMS: sqrt(mean(x^2) + eps)
         rms = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)

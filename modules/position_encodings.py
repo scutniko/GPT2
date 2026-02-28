@@ -14,9 +14,9 @@ class LearnedPositionEncoding(nn.Module):
     使用Embedding层来学习位置信息
     """
     
-    def __init__(self, block_size, n_embd):
+    def __init__(self, max_seq_len, n_embd):
         super().__init__()
-        self.wpe = nn.Embedding(block_size, n_embd)
+        self.wpe = nn.Embedding(max_seq_len, n_embd)
     
     def forward(self, idx):
         """
@@ -122,18 +122,18 @@ class RoPE(nn.Module):
     通过旋转变换来编码位置信息
     """
     
-    def __init__(self, dim, max_seq_len=2048, base=10000):
+    def __init__(self, head_dim, max_seq_len=2048, base=10000):
         super().__init__()
-        if dim <= 0:
-            raise ValueError(f"RoPE dim 必须 > 0，实际为 {dim}")
-        if dim % 2 != 0:
-            raise ValueError(f"RoPE dim 必须是偶数，实际为 {dim}")
-        self.dim = dim
+        if head_dim <= 0:
+            raise ValueError(f"RoPE head_dim 必须 > 0，实际为 {head_dim}")
+        if head_dim % 2 != 0:
+            raise ValueError(f"RoPE head_dim 必须是偶数，实际为 {head_dim}")
+        self.head_dim = head_dim
         self.max_seq_len = max_seq_len
         self.base = base
         
         # 预计算频率
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2).float() / head_dim))
         self.register_buffer("inv_freq", inv_freq)
         
         # 预计算cos和sin缓存（用于加速）
@@ -142,8 +142,8 @@ class RoPE(nn.Module):
     def _init_cache(self, seq_len):
         """预计算cos和sin值"""
         t = torch.arange(seq_len, device=self.inv_freq.device).type_as(self.inv_freq)
-        freqs = torch.outer(t, self.inv_freq)  # [seq_len, dim/2]
-        emb = torch.cat((freqs, freqs), dim=-1)  # [seq_len, dim]
+        freqs = torch.outer(t, self.inv_freq)  # [seq_len, head_dim/2]
+        emb = torch.cat((freqs, freqs), dim=-1)  # [seq_len, head_dim]
         self.register_buffer("cos_cached", emb.cos()[None, None, :, :], persistent=False)
         self.register_buffer("sin_cached", emb.sin()[None, None, :, :], persistent=False)
 
@@ -230,24 +230,24 @@ class SinusoidalPositionalEncoding(nn.Module):
     标准正弦位置编码（固定，不可学习）
     """
     
-    def __init__(self, d_model, max_seq_len=2048):
+    def __init__(self, n_embd, max_seq_len=2048):
         super().__init__()
-        self.d_model = d_model
+        self.n_embd = n_embd
         self._init_cache(max_seq_len)
 
     def _init_cache(self, max_seq_len):
-        # 创建位置编码矩阵 [max_seq_len, d_model]
-        pe = torch.zeros(max_seq_len, self.d_model)
+        # 创建位置编码矩阵 [max_seq_len, n_embd]
+        pe = torch.zeros(max_seq_len, self.n_embd)
         position = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, self.d_model, 2).float() * (-math.log(10000.0) / self.d_model))
+        div_term = torch.exp(torch.arange(0, self.n_embd, 2).float() * (-math.log(10000.0) / self.n_embd))
         
-        # PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
+        # PE(pos, 2i) = sin(pos / 10000^(2i/n_embd))
         pe[:, 0::2] = torch.sin(position * div_term)
-        # PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
+        # PE(pos, 2i+1) = cos(pos / 10000^(2i/n_embd))
         pe[:, 1::2] = torch.cos(position * div_term)
         
         # 注册为buffer，不参与梯度更新
-        # shape: [1, max_seq_len, d_model]
+        # shape: [1, max_seq_len, n_embd]
         self.register_buffer('pe', pe.unsqueeze(0), persistent=False)
     
     def ensure_cache(self, max_seq_len, device=None, dtype=None):
@@ -263,11 +263,11 @@ class SinusoidalPositionalEncoding(nn.Module):
     def forward(self, x, start_pos=0):
         """
         Args:
-            x: [B, T, d_model]
+            x: [B, T, n_embd]
             start_pos: 起始位置偏移（用于KV cache）
             
         Returns:
-            pe: [B, T, d_model] 位置编码
+            pe: [B, T, n_embd] 位置编码
         """
         # 返回对应序列长度的位置编码
         end_pos = start_pos + x.size(1)

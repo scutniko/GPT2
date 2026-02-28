@@ -71,8 +71,8 @@ class MoEMLP(nn.Module):
         Returns:
             y: [B, T, C]
         """
-        bsz, seq_len, dim = x.size()
-        x_flat = x.reshape(-1, dim)  # [N, C]
+        B, T, C = x.size()
+        x_flat = x.reshape(-1, C)  # [N, C]
 
         # 路由 logits & 概率
         logits = self.router(x_flat)
@@ -121,7 +121,7 @@ class MoEMLP(nn.Module):
             weights = weights.to(out.dtype).unsqueeze(-1)
             out.index_add_(0, token_idx, y_e * weights)
 
-        return out.view(bsz, seq_len, dim)
+        return out.view(B, T, C)
 
     def get_aux_loss(self):
         return self.last_aux_loss

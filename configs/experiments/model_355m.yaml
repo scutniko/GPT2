@@ -1,0 +1,21 @@
+base:
+  - ../base/model_124m.yaml
+  - ../base/train_default.yaml
+
+experiment_name: model_355m
+
+components:
+  attention: base
+  position_encoding: rope
+  mlp: swiglu
+  norm: rmsnorm
+
+model:
+  n_layer: 24
+  n_head: 16
+  n_embd: 1024
+
+train:
+  max_lr: 0.0003
+  min_lr: 0.00003
+  warmup_steps: 1000
