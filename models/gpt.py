@@ -155,22 +155,22 @@ class GPT(nn.Module):
             else:
                 raise ValueError(f"未知初始化方法: {init_method}")
 
-    def forward(self, idx, targets=None, past_kv=None, use_cache=False):
+    def forward(self, input_ids, labels=None, past_kv=None, use_cache=False):
         """
         前向传播
         
         Args:
-            idx: token indices [B, T]
-            targets: target token indices [B, T] (可选，用于计算loss)
+            input_ids: token indices [B, T]
+            labels: target token indices [B, T] (可选，用于计算loss)
             past_kv: 可选的KV cache列表（每层一个）
             use_cache: 是否返回当前KV cache
             
         Returns:
             logits: [B, T, vocab_size]
-            loss: scalar (如果提供了targets)
+            loss: scalar (如果提供了labels)
         """
-        # 输入idx的shape是[B, T]，其中B是batch size，T是序列长度
-        B, T = idx.size()
+        # 输入input_ids的shape是[B, T]，其中B是batch size，T是序列长度
+        B, T = input_ids.size()
         past_len = 0
         if past_kv is not None and len(past_kv) > 0 and past_kv[0] is not None:
             first_cache = past_kv[0][0] if isinstance(past_kv[0], (tuple, list)) else past_kv[0]
@@ -193,12 +193,12 @@ class GPT(nn.Module):
                 )
         
         # Token embedding
-        tok_emb = self.transformer.wte(idx)  # shape (B, T, n_embd)
+        tok_emb = self.transformer.wte(input_ids)  # shape (B, T, n_embd)
         
         # Position encoding
         if self.use_learned_pe:
             # 可学习的位置编码
-            pos = torch.arange(past_len, past_len + T, dtype=torch.long, device=idx.device)  # shape (T)
+            pos = torch.arange(past_len, past_len + T, dtype=torch.long, device=input_ids.device)  # shape (T)
             pos_emb = self.transformer.wpe(pos)  # shape (T, n_embd)
             x = tok_emb + pos_emb
         elif self.use_sine_pe:
@@ -213,13 +213,13 @@ class GPT(nn.Module):
             x = tok_emb
         
         # 前向传播Transformer的每个block，得到[B, T, n_embd]
-        presents = [] if use_cache else None
+        present_kv = [] if use_cache else None
         if use_cache:
             if past_kv is None:
                 past_kv = [None] * len(self.transformer.h)
             for layer_idx, block in enumerate(self.transformer.h):
-                x, present_kv = block(x, past_kv=past_kv[layer_idx], use_cache=True)
-                presents.append(present_kv)
+                x, layer_present_kv = block(x, past_kv=past_kv[layer_idx], use_cache=True)
+                present_kv.append(layer_present_kv)
         else:
             for block in self.transformer.h:
                 x = block(x)
@@ -230,13 +230,13 @@ class GPT(nn.Module):
         # 将Transformer的输出映射到词表空间，得到[B, T, vocab_size]
         logits = self.lm_head(x)  # (B, T, vocab_size)
         
-        # 如果targets不为None，则计算交叉熵损失
+        # 如果labels不为None，则计算交叉熵损失
         loss = None
-        if targets is not None:
+        if labels is not None:
             # 这里用的是原始logits，而不是softmax结果，因为F.cross_entropy会自动内部计算softmax，所以不需要再手动计算。
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
         if use_cache:
-            return logits, loss, presents
+            return logits, loss, present_kv
         return logits, loss
 
     def get_moe_aux_loss(self):
